@@ -6,13 +6,21 @@ from langchain_core.tools import tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage
+from langfuse.langchain import CallbackHandler as LangfuseCallback
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 from rich.prompt import Prompt
 import subprocess
 import os
-from duckduckgo_search import DDGS
+import json
+from dotenv import load_dotenv
+from ddgs import DDGS
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+HISTORY_FILE = os.path.expanduser("~/.kiwi_history.json")
+SYSTEM_PROMPT_FILE = os.path.join(os.path.dirname(__file__), "system_prompt.txt")
 
 console = Console()
 
@@ -29,12 +37,15 @@ class ToolLogger(BaseCallbackHandler):
 
 @tool
 def read_file(path: str) -> str:
-    """Lee un archivo. Input: ruta del archivo."""
-    with open(os.path.expanduser(path.strip()), "r") as f:
-        content = f.read()
-    if len(content) > MAX_OUTPUT:
-        content = content[:MAX_OUTPUT] + f"\n... [truncado, {len(content)} chars total]"
-    return content
+    """Lee un archivo del disco. Input: ruta real del archivo."""
+    try:
+        with open(os.path.expanduser(path.strip()), "r") as f:
+            content = f.read()
+        if len(content) > MAX_OUTPUT:
+            content = content[:MAX_OUTPUT] + f"\n... [truncado, {len(content)} chars total]"
+        return content
+    except FileNotFoundError:
+        return f"ERROR: El archivo '{path}' no existe. Este tool solo sirve para archivos reales del usuario. Responde directamente con tu conocimiento sin usar tools."
 
 @tool
 def write_file(path: str, content: str) -> str:
@@ -72,22 +83,11 @@ llm = ChatOllama(model="kiwi", temperature=0)
 
 # --- PROMPT ---
 
+with open(SYSTEM_PROMPT_FILE, "r") as f:
+    system_prompt = f.read()
+
 prompt = ChatPromptTemplate.from_messages([
-    ("system", """Eres Kiwi, un asistente local corriendo en el Mac del usuario.
-No eres un servicio en la nube. Responde siempre en español y de forma concisa.
-
-Tools disponibles:
-- run_command: para bash (mkdir, ls, mv, cp, rm, git, etc.)
-- write_file: para escribir contenido en un archivo (usa path y content por separado)
-- read_file: para leer el contenido de un archivo
-- search_web: para buscar en internet
-
-Ejemplos de uso correcto:
-- Crear carpeta → run_command("mkdir -p ~/Desktop/nueva-carpeta")
-- Ver archivos → run_command("ls ~/Desktop")
-- Leer archivo → read_file("~/archivo.txt")
-- Escribir archivo → write_file(path="~/archivo.txt", content="hola mundo")
-- Buscar info → search_web("cómo usar Python asyncio")"""),
+    ("system", system_prompt),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
     MessagesPlaceholder("agent_scratchpad"),
@@ -96,12 +96,14 @@ Ejemplos de uso correcto:
 # --- AGENTE ---
 
 agent = create_tool_calling_agent(llm, tools, prompt)
+langfuse = LangfuseCallback()
+
 executor = AgentExecutor(
     agent=agent,
     tools=tools,
     verbose=False,
     handle_parsing_errors=True,
-    callbacks=[ToolLogger()],
+    callbacks=[ToolLogger(), langfuse],
 )
 
 # --- UI ---
@@ -129,8 +131,30 @@ def show_error(text):
 
 # --- MEMORIA ---
 
-chat_history = []
-MAX_HISTORY_TURNS = 6  # 6 turnos = 12 mensajes, razonable para modelos pequeños
+MAX_HISTORY_TURNS = 6
+
+def load_history() -> list:
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    with open(HISTORY_FILE, "r") as f:
+        raw = json.load(f)
+    messages = []
+    for msg in raw:
+        if msg["role"] == "human":
+            messages.append(HumanMessage(content=msg["content"]))
+        else:
+            messages.append(AIMessage(content=msg["content"]))
+    return messages
+
+def save_history(history: list):
+    raw = [
+        {"role": "human" if isinstance(m, HumanMessage) else "ai", "content": m.content}
+        for m in history
+    ]
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+
+chat_history = load_history()
 
 # --- MAIN ---
 
@@ -140,10 +164,12 @@ while True:
     try:
         user_input = Prompt.ask("[bold cyan]Tú[/bold cyan]")
     except KeyboardInterrupt:
+        save_history(chat_history)
         console.print("\n[dim]Hasta luego! 👋[/dim]")
         break
 
     if user_input.lower() in ["salir", "exit", "quit", "q"]:
+        save_history(chat_history)
         console.print("[dim]Hasta luego! 👋[/dim]")
         break
 
