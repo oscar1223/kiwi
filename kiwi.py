@@ -14,6 +14,8 @@ from rich.prompt import Prompt
 import subprocess
 import os
 import json
+import uuid
+import socket
 from dotenv import load_dotenv
 from ddgs import DDGS
 
@@ -79,7 +81,7 @@ tools = [read_file, write_file, run_command, search_web]
 
 # --- LLM ---
 
-llm = ChatOllama(model="kiwi", temperature=0)
+llm = ChatOllama(model="kimi-k2.5:cloud", temperature=0)
 
 # --- PROMPT ---
 
@@ -110,7 +112,7 @@ executor = AgentExecutor(
 
 def show_banner():
     console.print(Panel.fit(
-        "[bold green]🥝 Kiwi Agent[/bold green]\n[dim]Asistente local · M3 Pro · Llama 3.1 8B[/dim]",
+        "[bold green]🥝 Kiwi Agent[/bold green]\n[dim]Asistente local · M3 Pro · Kimi K2.5 Cloud[/dim]",
         border_style="green"
     ))
     console.print("[dim]Escribe [bold]salir[/bold] para terminar\n[/dim]")
@@ -156,6 +158,10 @@ def save_history(history: list):
 
 chat_history = load_history()
 
+# --- LANGFUSE SESSION CONFIG ---
+SESSION_ID = str(uuid.uuid4())[:8]
+USER_ID = socket.gethostname() or "kiwi-user"
+
 # --- MAIN ---
 
 show_banner()
@@ -175,10 +181,19 @@ while True:
 
     try:
         with console.status("[dim yellow]Pensando...[/dim yellow]", spinner="dots"):
-            response = executor.invoke({
-                "input": user_input,
-                "chat_history": chat_history,
-            })
+            response = executor.invoke(
+                {
+                    "input": user_input,
+                    "chat_history": chat_history,
+                },
+                config={
+                    "metadata": {
+                        "langfuse_user_id": USER_ID,
+                        "langfuse_session_id": SESSION_ID,
+                        "langfuse_tags": ["kiwi-agent", "local", "ollama"],
+                    }
+                }
+            )
 
         answer = response["output"]
         show_response(answer)
