@@ -25,6 +25,7 @@ SYSTEM_PROMPT_FILE = os.path.join(BASE_DIR, "system_prompt.txt")
 
 MAX_OUTPUT = 2000
 MAX_HISTORY_TURNS = 6
+MODEL_NAME = "gpt-4o-mini"
 
 # --- TOOLS ---
 
@@ -80,24 +81,32 @@ TOOLS = [read_file, write_file, run_command, search_web]
 
 
 class ToolEventLogger(BaseCallbackHandler):
-    """Reenvía el inicio de cada tool call a un callback externo (usado por la TUI)."""
+    """Reenvía el inicio/fin de cada tool call a callbacks externos (usados por la TUI)."""
 
-    def __init__(self, on_tool_start=None):
+    def __init__(self, on_tool_start=None, on_tool_end=None):
         self._on_tool_start = on_tool_start
+        self._on_tool_end = on_tool_end
 
     def on_tool_start(self, serialized, input_str, **kwargs):
         if self._on_tool_start:
             name = serialized.get("name", "tool")
             self._on_tool_start(name, input_str)
 
+    def on_tool_end(self, output, **kwargs):
+        if self._on_tool_end:
+            text = output if isinstance(output, str) else getattr(output, "content", str(output))
+            self._on_tool_end(text)
 
-def build_executor(on_tool_start=None) -> AgentExecutor:
+
+def build_executor(on_tool_start=None, on_tool_end=None) -> AgentExecutor:
     """Construye el AgentExecutor de Kiwi.
 
     on_tool_start: callback opcional (name: str, input_str: str) -> None,
     invocado cada vez que el agente llama a una tool.
+    on_tool_end: callback opcional (output: str) -> None,
+    invocado cada vez que una tool devuelve su resultado.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
 
     with open(SYSTEM_PROMPT_FILE, "r") as f:
         system_prompt = f.read()
@@ -119,7 +128,7 @@ def build_executor(on_tool_start=None) -> AgentExecutor:
         tools=TOOLS,
         verbose=False,
         handle_parsing_errors=True,
-        callbacks=[ToolEventLogger(on_tool_start), langfuse],
+        callbacks=[ToolEventLogger(on_tool_start, on_tool_end), langfuse],
     )
 
 

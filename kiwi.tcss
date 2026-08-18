@@ -2,22 +2,10 @@ Screen {
     background: $background;
 }
 
-#banner {
-    height: auto;
-    padding: 1 2 0 2;
-    align: center middle;
-}
-
-#kiwi-wordmark {
-    width: 100%;
-    height: auto;
-    content-align: center middle;
-}
-
-#banner-help {
-    width: 100%;
-    content-align: center middle;
-    padding-top: 1;
+#header {
+    height: 1;
+    padding: 0 2;
+    background: $background;
 }
 
 #chat-log {
@@ -26,13 +14,11 @@ Screen {
     scrollbar-color: #4CAF50;
     scrollbar-color-hover: #7CFC00;
     scrollbar-color-active: #7CFC00;
-    border-top: solid #2e2e2e;
 }
 
 #status-bar {
     height: 1;
     padding: 0 2;
-    color: #d4a017;
     display: none;
 }
 
@@ -54,6 +40,7 @@ Screen {
     border: round #7CFC00;
 }
 
-Footer {
-    background: #1a1a1a;
+#input-hint {
+    height: 1;
+    padding: 0 1;
 }
