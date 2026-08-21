@@ -1,4 +1,5 @@
 langchain==1.2.10
+langchain-anthropic==1.6.1
 langchain-classic==1.0.1
 langchain-community==0.4.1
 langchain-core==1.6.0

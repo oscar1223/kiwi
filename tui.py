@@ -2,6 +2,7 @@
 """Interfaz de terminal (TUI) de Kiwi, construida con Textual."""
 
 import asyncio
+import os
 import threading
 import time
 
@@ -17,28 +18,31 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
+import agent
 from agent import (
     MODE_INSTRUCTIONS,
     MODE_LABELS,
     MODE_ORDER,
-    MODEL_NAME,
     TOOLS,
     Mode,
     build_executor,
     compact_history,
     load_history,
+    load_project_config,
     load_skills,
     new_session_ids,
     resolve_permission_policy,
     save_history,
 )
+from commands import config_flow, mcp_flow, memory_flow, model_flow, skill_flow
 
 ACCENT = "#7CFC00"
 ACCENT_DIM = "#4CAF50"
 
 INPUT_HINT = (
     "[dim]Enter para enviar · Esc para cancelar · Shift+Tab modo · "
-    "/ask /plan /work · Ctrl+C para salir[/dim]"
+    "/ask /plan /work · /model /config /mcp /skill /memory /context · "
+    "Ctrl+C para salir[/dim]"
 )
 
 EXIT_WORDS = {"salir", "exit", "quit", "q"}
@@ -51,6 +55,14 @@ MODE_COMMANDS = {
     "/auto-edit": Mode.WORK,
     "/edits": Mode.WORK,
     "/normal": Mode.ASK,
+}
+
+FLOW_COMMANDS = {
+    "/model": model_flow,
+    "/config": config_flow,
+    "/mcp": mcp_flow,
+    "/skill": skill_flow,
+    "/memory": memory_flow,
 }
 
 CELESTE = "#87CEFA"
@@ -136,14 +148,31 @@ class KiwiApp(App):
         self._spinner_index = 0
         self._status_timer = None
         self._awaiting_permission = None  # (threading.Event, dict) mientras se espera y/N
+        self._flow_busy = False  # True mientras un comando /model /config /mcp /skill /memory tiene un modal abierto
 
     def _header_text(self) -> str:
         style = MODE_STYLES.get(self.mode, "dim")
         label = MODE_LABELS.get(self.mode, self.mode)
         return (
-            f"[bold {ACCENT}]🥝 Kiwi[/bold {ACCENT}] [dim]· {MODEL_NAME} · sesión "
+            f"[bold {ACCENT}]🥝 Kiwi[/bold {ACCENT}] [dim]· {agent.current_model_label()} · sesión "
             f"{self.session_id}[/dim] · [{style}]{label}[/{style}]"
         )
+
+    def _rebuild_executor(self) -> None:
+        """Reconstruye el AgentExecutor (modelo/MCP/skills cambiados desde un
+        flow). Si falla (p. ej. falta una API key), se conserva el executor
+        anterior en vez de dejar la app sin poder responder."""
+        try:
+            self.executor = build_executor(
+                on_tool_start=self._on_tool_start,
+                on_tool_end=self._on_tool_end,
+                on_permission_request=self._request_permission,
+            )
+        except Exception as exc:  # noqa: BLE001 - se muestra al usuario, no se silencia
+            self.write_error(f"No se pudo aplicar el cambio: {exc}")
+            return
+        self.query_one("#header", Static).update(self._header_text())
+        self.write_system(f"Configuración recargada. Modelo activo: {agent.current_model_label()}")
 
     def compose(self) -> ComposeResult:
         yield Static(self._header_text(), id="header")
@@ -348,6 +377,43 @@ class KiwiApp(App):
         log.write(Text(f"  → {'permitido' if answer else 'denegado'}", style="dim italic"))
         event.set()
 
+    # --- flows interactivos (/model /config /mcp /skill /memory) ---
+    #
+    # Cada comando es una corutina (ver commands.py) que navega por menús
+    # modales reales (flechas + Enter) con app.push_screen_wait, en vez de
+    # esperar texto literal en el input principal.
+
+    @work(exclusive=True, group="command-flow")
+    async def _run_flow(self, coro) -> None:
+        self._flow_busy = True
+        try:
+            await coro
+        finally:
+            self._flow_busy = False
+
+    def write_context_summary(self) -> None:
+        env_name = agent.profile_api_key_env(agent.get_current_profile())
+        key_status = "no requiere key" if env_name is None else (
+            f"{env_name} configurada" if os.getenv(env_name) else f"⚠ falta {env_name}"
+        )
+        skills = load_skills()
+        core_names = {t.name for t in TOOLS}
+        mcp_names = [t.name for t in self.executor.tools if t.name not in core_names]
+        project_config = "sí" if load_project_config() else "no"
+        turns = len(self.chat_history) // 2
+        tokens = agent._estimate_tokens(self.chat_history)
+        self.write_system(
+            "Contexto de la sesión actual:\n"
+            f"- Modo: {MODE_LABELS[self.mode]}\n"
+            f"- Modelo: {agent.current_model_label()} ({key_status})\n"
+            f"- Sesión: {self.session_id} · usuario: {self.user_id}\n"
+            f"- Memoria: {turns} turnos (~{tokens} tokens estimados)\n"
+            f"- Skills cargadas: {', '.join(skills) or '(ninguna)'}\n"
+            f"- Tools MCP conectadas: {', '.join(mcp_names) or '(ninguna)'}\n"
+            f"- Directorio de trabajo: {os.getcwd()}\n"
+            f"- Instrucciones de proyecto (KIWI.md/AGENTS.md): {project_config}"
+        )
+
     async def _stream_agent(self, text: str) -> str:
         """Consume astream_events del AgentExecutor y va renderizando la
         respuesta final token a token, ignorando los chunks de tool-calling
@@ -408,7 +474,7 @@ class KiwiApp(App):
         if self._awaiting_permission is not None:
             self._resolve_permission(text)
             return
-        if not text or self._busy:
+        if not text or self._busy or self._flow_busy:
             return
         lowered = text.lower()
         if lowered in MODE_COMMANDS:
@@ -416,6 +482,12 @@ class KiwiApp(App):
             return
         if lowered == "/mode":
             self.write_system(f"Modo actual: {MODE_LABELS[self.mode]}")
+            return
+        if lowered in FLOW_COMMANDS:
+            self._run_flow(FLOW_COMMANDS[lowered](self))
+            return
+        if lowered == "/context":
+            self.write_context_summary()
             return
         if lowered in EXIT_WORDS:
             self.action_quit()

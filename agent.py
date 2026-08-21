@@ -41,10 +41,11 @@ HISTORY_FILE = os.path.expanduser("~/.kiwi_history.json")
 SYSTEM_PROMPT_FILE = os.path.join(BASE_DIR, "system_prompt.txt")
 SKILLS_DIR = os.path.join(BASE_DIR, "skills")
 MCP_CONFIG_FILE = os.path.join(BASE_DIR, "mcp_servers.json")
+MODEL_CONFIG_FILE = os.path.join(BASE_DIR, "models.json")
+ENV_FILE = os.path.join(BASE_DIR, ".env")
 PROJECT_CONFIG_FILENAMES = ["KIWI.md", "AGENTS.md"]
 
 MAX_OUTPUT = 2000
-MODEL_NAME = "gpt-4o-mini"
 
 # Compactación de contexto: si el historial estimado supera este presupuesto de
 # tokens, se resumen los turnos más antiguos y se conservan sin tocar los últimos
@@ -246,6 +247,24 @@ def load_skills() -> dict:
     return skills
 
 
+def save_skill(name: str, description: str, body: str) -> str:
+    """Crea o sobrescribe skills/<name>.md con el frontmatter esperado por
+    _parse_skill_file. Devuelve la ruta del archivo."""
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    path = os.path.join(SKILLS_DIR, f"{name}.md")
+    content = f"---\nname: {name}\ndescription: {description}\n---\n{body.strip()}\n"
+    with open(path, "w") as f:
+        f.write(content)
+    return path
+
+
+def delete_skill(name: str) -> None:
+    path = os.path.join(SKILLS_DIR, f"{name}.md")
+    if not os.path.exists(path):
+        raise ValueError(f"No existe la skill '{name}'.")
+    os.remove(path)
+
+
 def skills_summary(skills: dict) -> str:
     if not skills:
         return ""
@@ -300,6 +319,206 @@ def load_project_config() -> str:
     return ""
 
 
+# --- MODELOS ---
+#
+# Kiwi es agnóstico de proveedor: un "perfil" de modelo es {provider, model,
+# [base_url], [api_key_env]} guardado en models.json (gitignored, ver
+# models.json.example). El perfil activo se reconstruye en build_executor()
+# cada vez que cambia (ver KiwiApp._rebuild_executor en tui.py).
+
+BUILTIN_MODEL_PROFILES = {
+    "gpt-4o-mini": {"provider": "openai", "model": "gpt-4o-mini"},
+}
+DEFAULT_MODEL_NAME = "gpt-4o-mini"
+
+# api_key_env es fijo para openai/anthropic; para "ollama" no hace falta key
+# (modelo local); para "openai_compatible" lo define cada perfil, porque cada
+# proveedor compatible (DeepSeek, Qwen, Kimi, Groq, OpenRouter...) usa su
+# propia variable de entorno.
+PROVIDER_INFO = {
+    "openai": {"label": "OpenAI", "api_key_env": "OPENAI_API_KEY", "custom_base_url": False},
+    "anthropic": {"label": "Anthropic", "api_key_env": "ANTHROPIC_API_KEY", "custom_base_url": False},
+    "ollama": {"label": "Ollama (local)", "api_key_env": None, "custom_base_url": False},
+    "openai_compatible": {
+        "label": "Compatible con API OpenAI (DeepSeek, Qwen, Kimi, Groq, OpenRouter...)",
+        "api_key_env": None,
+        "custom_base_url": True,
+    },
+}
+
+
+def load_model_config() -> dict:
+    """Perfiles built-in fusionados con models.json (si existe). Los
+    perfiles definidos por el usuario pueden sobrescribir los built-in por
+    nombre. Sin models.json, Kiwi arranca igual que antes (gpt-4o-mini)."""
+    profiles = dict(BUILTIN_MODEL_PROFILES)
+    current = DEFAULT_MODEL_NAME
+    if os.path.exists(MODEL_CONFIG_FILE):
+        try:
+            with open(MODEL_CONFIG_FILE, "r") as f:
+                raw = json.load(f)
+            profiles.update(raw.get("profiles", {}))
+            current = raw.get("current", current)
+        except (json.JSONDecodeError, OSError):
+            pass
+    if current not in profiles:
+        current = next(iter(profiles), DEFAULT_MODEL_NAME)
+    return {"current": current, "profiles": profiles}
+
+
+def _save_model_config(cfg: dict) -> None:
+    # Solo se persisten los perfiles que no son built-in idénticos, para que
+    # models.json quede legible y no repita lo que ya trae Kiwi de fábrica.
+    user_profiles = {
+        name: profile
+        for name, profile in cfg["profiles"].items()
+        if BUILTIN_MODEL_PROFILES.get(name) != profile
+    }
+    with open(MODEL_CONFIG_FILE, "w") as f:
+        json.dump({"current": cfg["current"], "profiles": user_profiles}, f, ensure_ascii=False, indent=2)
+
+
+def set_current_model(name: str) -> None:
+    cfg = load_model_config()
+    if name not in cfg["profiles"]:
+        raise ValueError(f"No existe el perfil de modelo '{name}'.")
+    cfg["current"] = name
+    _save_model_config(cfg)
+
+
+def add_model_profile(name: str, provider: str, model: str, base_url: str = None, api_key_env: str = None) -> None:
+    if provider not in PROVIDER_INFO:
+        raise ValueError(f"Proveedor desconocido: {provider}")
+    cfg = load_model_config()
+    profile = {"provider": provider, "model": model}
+    if base_url:
+        profile["base_url"] = base_url
+    if api_key_env:
+        profile["api_key_env"] = api_key_env
+    cfg["profiles"][name] = profile
+    _save_model_config(cfg)
+
+
+def remove_model_profile(name: str) -> None:
+    cfg = load_model_config()
+    if name not in cfg["profiles"]:
+        raise ValueError(f"No existe el perfil de modelo '{name}'.")
+    if cfg["current"] == name:
+        raise ValueError("No se puede eliminar el perfil de modelo activo. Cambia de modelo primero.")
+    del cfg["profiles"][name]
+    _save_model_config(cfg)
+
+
+def get_current_profile() -> dict:
+    cfg = load_model_config()
+    return cfg["profiles"][cfg["current"]]
+
+
+def profile_api_key_env(profile: dict) -> Optional[str]:
+    """Nombre de la variable de entorno que necesita este perfil, o None si
+    no hace falta (p. ej. ollama local)."""
+    if profile.get("api_key_env"):
+        return profile["api_key_env"]
+    return PROVIDER_INFO.get(profile["provider"], {}).get("api_key_env")
+
+
+def current_model_label() -> str:
+    cfg = load_model_config()
+    profile = cfg["profiles"][cfg["current"]]
+    return f"{cfg['current']} ({profile['provider']}/{profile['model']})"
+
+
+def build_llm_from_profile(profile: dict):
+    provider = profile["provider"]
+    model = profile["model"]
+    if provider == "openai":
+        return ChatOpenAI(model=model, temperature=0, api_key=os.getenv("OPENAI_API_KEY"))
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(model=model, temperature=0, api_key=os.getenv("ANTHROPIC_API_KEY"))
+    if provider == "ollama":
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(model=model, temperature=0)
+    if provider == "openai_compatible":
+        api_key_env = profile_api_key_env(profile)
+        return ChatOpenAI(
+            model=model,
+            temperature=0,
+            base_url=profile.get("base_url"),
+            api_key=os.getenv(api_key_env) if api_key_env else None,
+        )
+    raise ValueError(f"Proveedor desconocido: {provider}")
+
+
+# --- ENTORNO ---
+#
+# API keys y demás variables de entorno se guardan en .env (gitignored, ya
+# cargado con load_dotenv al importar este módulo). set_env_value/unset_env_value
+# reescriben el archivo preservando el resto de líneas y recargan el entorno
+# del proceso actual, así los cambios aplican sin reiniciar Kiwi.
+
+
+def _read_env_lines() -> list:
+    if not os.path.exists(ENV_FILE):
+        return []
+    with open(ENV_FILE, "r") as f:
+        return f.readlines()
+
+
+def list_env_keys() -> list:
+    """Unión de las variables que los proveedores conocidos necesitan, las
+    que usan los perfiles de modelo guardados, y las que ya estén en .env."""
+    keys = set()
+    for info in PROVIDER_INFO.values():
+        if info["api_key_env"]:
+            keys.add(info["api_key_env"])
+    cfg = load_model_config()
+    for profile in cfg["profiles"].values():
+        env_name = profile_api_key_env(profile)
+        if env_name:
+            keys.add(env_name)
+    for line in _read_env_lines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            keys.add(line.split("=", 1)[0].strip())
+    return sorted(keys)
+
+
+def get_masked_env(key: str) -> str:
+    value = os.getenv(key)
+    if not value:
+        return "(no configurada)"
+    if len(value) <= 4:
+        return "*" * len(value)
+    return "*" * (len(value) - 4) + value[-4:]
+
+
+def set_env_value(key: str, value: str) -> None:
+    lines = _read_env_lines()
+    prefix = f"{key}="
+    new_line = f"{key}={value}\n"
+    for i, line in enumerate(lines):
+        if line.strip().startswith(prefix):
+            lines[i] = new_line
+            break
+    else:
+        lines.append(new_line)
+    with open(ENV_FILE, "w") as f:
+        f.writelines(lines)
+    os.environ[key] = value
+
+
+def unset_env_value(key: str) -> None:
+    lines = _read_env_lines()
+    prefix = f"{key}="
+    lines = [line for line in lines if not line.strip().startswith(prefix)]
+    with open(ENV_FILE, "w") as f:
+        f.writelines(lines)
+    os.environ.pop(key, None)
+
+
 # --- MCP ---
 
 
@@ -321,6 +540,38 @@ def _wrap_mcp_tool_with_permission(mcp_tool):
         args_schema=mcp_tool.args_schema,
         coroutine=gated,
     )
+
+
+def read_mcp_config() -> dict:
+    if not os.path.exists(MCP_CONFIG_FILE):
+        return {}
+    try:
+        with open(MCP_CONFIG_FILE, "r") as f:
+            return json.load(f) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def write_mcp_config(config: dict) -> None:
+    with open(MCP_CONFIG_FILE, "w") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+
+def add_mcp_server(name: str, command: str, args: list, env: Optional[dict] = None) -> None:
+    config = read_mcp_config()
+    entry = {"transport": "stdio", "command": command, "args": args}
+    if env:
+        entry["env"] = env
+    config[name] = entry
+    write_mcp_config(config)
+
+
+def remove_mcp_server(name: str) -> None:
+    config = read_mcp_config()
+    if name not in config:
+        raise ValueError(f"No existe el servidor MCP '{name}'.")
+    del config[name]
+    write_mcp_config(config)
 
 
 def load_mcp_tools() -> list:
@@ -497,7 +748,7 @@ def build_executor(on_tool_start=None, on_tool_end=None, on_permission_request=N
     sin confirmación (compatibilidad con usos no interactivos).
     """
     set_permission_callback(on_permission_request)
-    llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
+    llm = build_llm_from_profile(get_current_profile())
 
     with open(SYSTEM_PROMPT_FILE, "r") as f:
         system_prompt = f.read()
@@ -566,7 +817,7 @@ def _estimate_tokens(messages: list) -> int:
 
 def summarize_history(messages: list) -> str:
     """Resume una lista de mensajes antiguos en un párrafo conciso."""
-    llm = ChatOpenAI(model=MODEL_NAME, temperature=0)
+    llm = build_llm_from_profile(get_current_profile())
     convo_text = "\n".join(
         f"{'Usuario' if isinstance(m, HumanMessage) else 'Kiwi'}: {m.content}" for m in messages
     )
