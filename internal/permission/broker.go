@@ -172,3 +172,18 @@ var ErrNoUI = errors.New(
 type NonInteractive struct{}
 
 func (NonInteractive) Decide(context.Context, *Request) (bool, error) { return false, ErrNoUI }
+
+// Wait blocks until the request is answered or ctx is done.
+//
+// A Decider that hands requests to a UI uses this to park the calling tool's
+// goroutine: on cancellation it denies the request itself, so a UI still
+// holding it is not left waiting on a reader that has gone away.
+func (r *Request) Wait(ctx context.Context) (bool, error) {
+	select {
+	case allow := <-r.resp:
+		return allow, nil
+	case <-ctx.Done():
+		r.Deny()
+		return false, ctx.Err()
+	}
+}

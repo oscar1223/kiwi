@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"iter"
 	"sync"
+	"time"
 
 	"github.com/oscar1223/kiwi/internal/llm"
 )
@@ -27,6 +28,9 @@ type Step struct {
 	// Hook runs when this step begins streaming; useful for triggering
 	// cancellation mid-turn.
 	Hook func()
+	// Delay is waited before each chunk, so a test can catch a turn while it
+	// is still streaming. It respects ctx, like a real provider would.
+	Delay time.Duration
 }
 
 // Fake is a Provider that replays Steps in order.
@@ -75,6 +79,14 @@ func (f *Fake) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Event,
 		}
 		var text string
 		for _, c := range chunks {
+			if step.Delay > 0 {
+				select {
+				case <-time.After(step.Delay):
+				case <-ctx.Done():
+					yield(llm.Event{}, ctx.Err())
+					return
+				}
+			}
 			if err := ctx.Err(); err != nil {
 				yield(llm.Event{}, err)
 				return

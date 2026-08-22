@@ -10,12 +10,9 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/oscar1223/kiwi/internal/agent"
-	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
-	"github.com/oscar1223/kiwi/internal/prompt"
-	"github.com/oscar1223/kiwi/internal/tools"
+	"github.com/oscar1223/kiwi/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -130,44 +127,21 @@ func runAsk(ctx context.Context, g *globalFlags, opts askOptions, stdout, stderr
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cwd := g.cwd
-	if cwd == "" {
-		var err error
-		if cwd, err = os.Getwd(); err != nil {
-			return err
-		}
-	}
-
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	name, profile, err := cfg.Profile(g.model)
-	if err != nil {
-		return err
-	}
-	provider, err := config.BuildProvider(name, profile)
-	if err != nil {
-		return err
-	}
-
-	projectFile, projectInstructions := config.ProjectInstructions(cwd)
-	sys := prompt.Build(prompt.Options{
-		WorkingDir:          cwd,
-		ProjectFile:         projectFile,
-		ProjectInstructions: projectInstructions,
-		ModeInstructions:    opts.mode.Instructions(),
-	})
-
 	// Nobody is watching a headless run, so anything the mode policy does not
 	// settle is refused — unless the user opted out with --yolo.
 	var decider permission.Decider = permission.NonInteractive{}
 	if opts.yolo {
 		decider = permission.AllowAll{}
 	}
-	broker := permission.NewBroker(opts.mode, decider)
+
+	sess, err := newSession(ctx, g, opts.mode, decider)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
 	if !opts.quiet {
-		broker.OnAutoDecision(func(req *permission.Request, allowed bool) {
+		sess.broker.OnAutoDecision(func(req *permission.Request, allowed bool) {
 			verb := "blocked"
 			if allowed {
 				verb = "auto-approved"
@@ -176,14 +150,8 @@ func runAsk(ctx context.Context, g *globalFlags, opts askOptions, stdout, stderr
 		})
 	}
 
-	a := &agent.Agent{
-		Provider: provider,
-		Tools:    tools.Default(cwd, broker),
-		System:   sys,
-	}
-
 	obs := &cliObserver{out: stdout, progress: stderr, quiet: opts.quiet}
-	res, err := a.Run(ctx, opts.input, nil, obs)
+	res, err := sess.agent.Run(ctx, opts.input, sess.history, obs)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(stderr, "\ncancelled")
@@ -195,6 +163,13 @@ func runAsk(ctx context.Context, g *globalFlags, opts askOptions, stdout, stderr
 	// The answer streamed to stdout already; just terminate the line.
 	if res.Text != "" && !strings.HasSuffix(res.Text, "\n") {
 		fmt.Fprintln(stdout)
+	}
+
+	// A single headless run has no interactivity to protect, so persisting
+	// synchronously before exiting is simplest — there is no next prompt it
+	// could be blocking.
+	if _, err := session.Persist(ctx, sess.store, sess.meta.ID, sess.agent.Provider, res.Messages); err != nil && !opts.quiet {
+		fmt.Fprintln(stderr, "kiwi: warning: could not save this session:", err)
 	}
 	return nil
 }
