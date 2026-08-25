@@ -102,8 +102,30 @@ comandos sin pedir confirmación.
 Todo vive bajo `~/.config/kiwi/` (u `$XDG_CONFIG_HOME/kiwi/`):
 
 - `kiwi.json` — perfiles de modelo y perfil activo. Perfiles de ejemplo ya incluidos:
-  `sonnet` y `opus` (Anthropic), `gpt` (OpenAI), `local` (cualquier servidor compatible
-  con la API de OpenAI, como Ollama, en `http://localhost:11434/v1`).
+  - `sonnet` y `opus` (Anthropic, `ANTHROPIC_API_KEY`), `gpt` (OpenAI, `OPENAI_API_KEY`),
+    `local` (cualquier servidor compatible con la API de OpenAI, como Ollama, en
+    `http://localhost:11434/v1`).
+  - Cualquier proveedor que hable el formato chat-completions de OpenAI funciona solo
+    cambiando `base_url` y la env var de la key — ya vienen listos `openrouter`
+    (`OPENROUTER_API_KEY`), `groq` (`GROQ_API_KEY`), `deepseek` (`DEEPSEEK_API_KEY`),
+    `mistral` (`MISTRAL_API_KEY`), `xai` (`XAI_API_KEY`), `cerebras`
+    (`CEREBRAS_API_KEY`), `perplexity` (`PERPLEXITY_API_KEY`), `together`
+    (`TOGETHER_API_KEY`), `fireworks` (`FIREWORKS_API_KEY`), `deepinfra`
+    (`DEEPINFRA_API_KEY`), `moonshot` (`MOONSHOT_API_KEY`), `zhipu` (`ZHIPU_API_KEY`) y
+    `gemini` (`GEMINI_API_KEY`, vía el endpoint de Gemini compatible con OpenAI). Los
+    modelos de estos perfiles son ejemplos — ajústalos con `/model` según lo que tenga
+    cada proveedor en cada momento.
+  - Tres perfiles más necesitan credenciales de nube, no solo una API key — no son
+    zero-config como los de arriba:
+    - `azure` — Azure OpenAI. Necesita `AZURE_RESOURCE_NAME` y `AZURE_API_KEY`; el
+      `model` del perfil es el nombre del *deployment*, no el modelo en sí.
+    - `vertex` — modelos Claude en Google Vertex AI. Necesita `GOOGLE_VERTEX_PROJECT` y
+      `GOOGLE_VERTEX_LOCATION`, y credenciales de aplicación por defecto (ADC) — normalmente
+      vía `GOOGLE_APPLICATION_CREDENTIALS` apuntando a una service account, o `gcloud auth
+      application-default login`.
+    - `bedrock` — modelos Claude en AWS Bedrock. Usa la cadena de credenciales estándar de
+      AWS (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`, un perfil compartido, o
+      `AWS_BEARER_TOKEN_BEDROCK`).
 - `.env` — API keys y demás variables, gestionadas con `/config`.
 - `mcp.json` — servidores MCP, por stdio o remotos (HTTP/SSE).
 - `skills/` — skills en Markdown que el modelo carga bajo demanda.

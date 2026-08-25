@@ -8,7 +8,9 @@ import (
 	"iter"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/vertex"
 	"github.com/oscar1223/kiwi/internal/llm"
 )
 
@@ -17,6 +19,7 @@ const defaultMaxTokens = 8192
 type Provider struct {
 	client sdk.Client
 	model  string
+	name   string
 }
 
 type Options struct {
@@ -25,18 +28,60 @@ type Options struct {
 	Model   string
 }
 
+// defaultMaxRetries raises the SDK's default of 2. Kiwi's tool loop can burst
+// several requests in quick succession (parallel subagents, retried turns),
+// which trips provider rate limits well within 2 attempts; the SDK's own
+// backoff already respects Retry-After, so widening the budget is enough.
+const defaultMaxRetries = 5
+
 func New(opts Options) *Provider {
-	reqOpts := []option.RequestOption{}
+	reqOpts := []option.RequestOption{option.WithMaxRetries(defaultMaxRetries)}
 	if opts.APIKey != "" {
 		reqOpts = append(reqOpts, option.WithAPIKey(opts.APIKey))
 	}
 	if opts.BaseURL != "" {
 		reqOpts = append(reqOpts, option.WithBaseURL(opts.BaseURL))
 	}
-	return &Provider{client: sdk.NewClient(reqOpts...), model: opts.Model}
+	return &Provider{client: sdk.NewClient(reqOpts...), model: opts.Model, name: "anthropic"}
 }
 
-func (p *Provider) Name() string  { return "anthropic" }
+// NewVertex builds a Provider that runs Claude models on Google Vertex AI,
+// authenticating with Application Default Credentials instead of an API key.
+//
+// vertex.WithGoogleAuth resolves credentials eagerly (it panics if ADC can't
+// be found), unlike New above, which never touches the network at
+// construction time — so unlike New, this can fail, and the panic is
+// recovered into a normal error rather than crashing the caller.
+func NewVertex(ctx context.Context, region, projectID, model string) (p *Provider, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			p, err = nil, fmt.Errorf("vertex: %v", r)
+		}
+	}()
+	client := sdk.NewClient(
+		option.WithMaxRetries(defaultMaxRetries),
+		vertex.WithGoogleAuth(ctx, region, projectID),
+	)
+	return &Provider{client: client, model: model, name: "vertex"}, nil
+}
+
+// NewBedrock builds a Provider that runs Claude models on AWS Bedrock,
+// authenticating with the standard AWS credential chain instead of an API
+// key. See NewVertex for why this returns an error and recovers a panic.
+func NewBedrock(ctx context.Context, model string) (p *Provider, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			p, err = nil, fmt.Errorf("bedrock: %v", r)
+		}
+	}()
+	client := sdk.NewClient(
+		option.WithMaxRetries(defaultMaxRetries),
+		bedrock.WithLoadDefaultConfig(ctx),
+	)
+	return &Provider{client: client, model: model, name: "bedrock"}, nil
+}
+
+func (p *Provider) Name() string  { return p.name }
 func (p *Provider) Model() string { return p.model }
 
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Event, error] {

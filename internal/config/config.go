@@ -3,6 +3,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,18 @@ const (
 	// KindOpenAI uses the chat-completions wire format: OpenAI itself, but
 	// also Ollama, LM Studio, OpenRouter, Groq and friends.
 	KindOpenAI ProviderKind = "openai"
+	// KindAzureOpenAI uses Azure's OpenAI deployment (resource name + API
+	// version + api-key header, rather than a flat base URL and bearer
+	// token), via AZURE_RESOURCE_NAME and AZURE_API_KEY.
+	KindAzureOpenAI ProviderKind = "azure-openai"
+	// KindVertex uses Claude models on Google Vertex AI, authenticating with
+	// Application Default Credentials rather than an API key. Needs
+	// GOOGLE_VERTEX_PROJECT and GOOGLE_VERTEX_LOCATION in the environment.
+	KindVertex ProviderKind = "vertex"
+	// KindBedrock uses Claude models on AWS Bedrock, authenticating with the
+	// standard AWS credential chain (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/
+	// AWS_REGION, or AWS_BEARER_TOKEN_BEDROCK) rather than an API key.
+	KindBedrock ProviderKind = "bedrock"
 )
 
 type Profile struct {
@@ -74,6 +87,102 @@ func Default() *Config {
 				Provider: KindOpenAI,
 				Model:    "qwen3-coder",
 				BaseURL:  "http://localhost:11434/v1",
+			},
+			"openrouter": {
+				Provider:  KindOpenAI,
+				Model:     "openai/gpt-5.5",
+				BaseURL:   "https://openrouter.ai/api/v1",
+				APIKeyEnv: "OPENROUTER_API_KEY",
+			},
+			// The rest all speak the same chat-completions wire format as
+			// "gpt" above — just a different host and key. Model names are
+			// placeholders (each provider's lineup moves fast); adjust via
+			// /model or by editing kiwi.json directly.
+			"groq": {
+				Provider:  KindOpenAI,
+				Model:     "llama-3.3-70b-versatile",
+				BaseURL:   "https://api.groq.com/openai/v1",
+				APIKeyEnv: "GROQ_API_KEY",
+			},
+			"deepseek": {
+				Provider:  KindOpenAI,
+				Model:     "deepseek-v4-flash",
+				BaseURL:   "https://api.deepseek.com",
+				APIKeyEnv: "DEEPSEEK_API_KEY",
+			},
+			"mistral": {
+				Provider:  KindOpenAI,
+				Model:     "mistral-medium-2508",
+				BaseURL:   "https://api.mistral.ai/v1",
+				APIKeyEnv: "MISTRAL_API_KEY",
+			},
+			"xai": {
+				Provider:  KindOpenAI,
+				Model:     "grok-4",
+				BaseURL:   "https://api.x.ai/v1",
+				APIKeyEnv: "XAI_API_KEY",
+			},
+			"cerebras": {
+				Provider:  KindOpenAI,
+				Model:     "gpt-oss-120b",
+				BaseURL:   "https://api.cerebras.ai/v1",
+				APIKeyEnv: "CEREBRAS_API_KEY",
+			},
+			"perplexity": {
+				Provider:  KindOpenAI,
+				Model:     "sonar-pro",
+				BaseURL:   "https://api.perplexity.ai",
+				APIKeyEnv: "PERPLEXITY_API_KEY",
+			},
+			"together": {
+				Provider:  KindOpenAI,
+				Model:     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+				BaseURL:   "https://api.together.xyz/v1",
+				APIKeyEnv: "TOGETHER_API_KEY",
+			},
+			"fireworks": {
+				Provider:  KindOpenAI,
+				Model:     "accounts/fireworks/models/llama-v3p3-70b-instruct",
+				BaseURL:   "https://api.fireworks.ai/inference/v1",
+				APIKeyEnv: "FIREWORKS_API_KEY",
+			},
+			"deepinfra": {
+				Provider:  KindOpenAI,
+				Model:     "meta-llama/Llama-3.3-70B-Instruct",
+				BaseURL:   "https://api.deepinfra.com/v1/openai",
+				APIKeyEnv: "DEEPINFRA_API_KEY",
+			},
+			"moonshot": {
+				Provider:  KindOpenAI,
+				Model:     "kimi-k2.7-code",
+				BaseURL:   "https://api.moonshot.ai/v1",
+				APIKeyEnv: "MOONSHOT_API_KEY",
+			},
+			"zhipu": {
+				Provider:  KindOpenAI,
+				Model:     "glm-5v-turbo",
+				BaseURL:   "https://open.bigmodel.cn/api/paas/v4",
+				APIKeyEnv: "ZHIPU_API_KEY",
+			},
+			"gemini": {
+				Provider:  KindOpenAI,
+				Model:     "gemini-2.5-pro",
+				BaseURL:   "https://generativelanguage.googleapis.com/v1beta/openai/",
+				APIKeyEnv: "GEMINI_API_KEY",
+			},
+			// These three need real cloud credentials, not just an API key —
+			// see BuildProvider and the README for what each needs.
+			"azure": {
+				Provider: KindAzureOpenAI,
+				Model:    "<your-deployment-name>",
+			},
+			"vertex": {
+				Provider: KindVertex,
+				Model:    "claude-sonnet-5",
+			},
+			"bedrock": {
+				Provider: KindBedrock,
+				Model:    "us.anthropic.claude-sonnet-5-v1:0",
 			},
 		},
 	}
@@ -178,8 +287,10 @@ func (c *Config) ProfileNames() []string {
 // looks like before any provider has been configured.
 var ErrMissingAPIKey = errors.New("config: missing API key")
 
-// BuildProvider instantiates the provider for a profile.
-func BuildProvider(name string, p Profile) (llm.Provider, error) {
+// BuildProvider instantiates the provider for a profile. ctx is only used by
+// Vertex and Bedrock, both of which resolve cloud credentials (ADC / the AWS
+// credential chain) up front rather than lazily on first request.
+func BuildProvider(ctx context.Context, name string, p Profile) (llm.Provider, error) {
 	var apiKey string
 	if p.APIKeyEnv != "" {
 		apiKey = os.Getenv(p.APIKeyEnv)
@@ -206,6 +317,26 @@ func BuildProvider(name string, p Profile) (llm.Provider, error) {
 			Model:   p.Model,
 			Name:    name,
 		}), nil
+	case KindAzureOpenAI:
+		resource := os.Getenv("AZURE_RESOURCE_NAME")
+		azureKey := os.Getenv("AZURE_API_KEY")
+		if resource == "" || azureKey == "" {
+			return nil, fmt.Errorf("%w: profile %q needs AZURE_RESOURCE_NAME and AZURE_API_KEY to be set in the environment", ErrMissingAPIKey, name)
+		}
+		return openai.NewAzure(openai.AzureOptions{
+			Resource:   resource,
+			APIKey:     azureKey,
+			Deployment: p.Model,
+		}), nil
+	case KindVertex:
+		project := os.Getenv("GOOGLE_VERTEX_PROJECT")
+		region := os.Getenv("GOOGLE_VERTEX_LOCATION")
+		if project == "" || region == "" {
+			return nil, fmt.Errorf("%w: profile %q needs GOOGLE_VERTEX_PROJECT and GOOGLE_VERTEX_LOCATION to be set in the environment", ErrMissingAPIKey, name)
+		}
+		return anthropic.NewVertex(ctx, region, project, p.Model)
+	case KindBedrock:
+		return anthropic.NewBedrock(ctx, p.Model)
 	default:
 		return nil, fmt.Errorf("profile %q: unknown provider %q", name, p.Provider)
 	}

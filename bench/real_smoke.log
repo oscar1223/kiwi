@@ -1,0 +1,18 @@
+Starting harness run
+Run ID: smoke-test-real
+Error parsing results for task cron-broken-network: No short test summary info found in the provided content.. It's possible that the tests failed to run. Inspect /Users/racso/kiwi/bench/runs/smoke-test-real/cron-broken-network/cron-broken-network.1-of-1.smoke-test-real/panes/post-test.txt for more information.
+Test command timed out after 120.0s for task swe-bench-fsspec.
+  Running tasks (4/4, Accuracy: 25.00%) - Last: fix-permissions ✓ ━━━━ 100% 0:0…
+
+Results Summary:
++-------------------+---------+
+| Metric            | Value   |
++===================+=========+
+| Resolved Trials   | 1       |
++-------------------+---------+
+| Unresolved Trials | 3       |
++-------------------+---------+
+| Accuracy          | 25.00%  |
++-------------------+---------+
+
+Results written to /Users/racso/kiwi/bench/runs/smoke-test-real/results.json

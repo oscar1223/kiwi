@@ -1,0 +1,31 @@
+Starting harness run
+Run ID: smoke-test-20
+/Users/racso/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/events.py:89: RuntimeWarning: The executor did not finishing joining its threads within 300 seconds.
+  self._context.run(self._callback, *self._args)
+Agent timed out after 600.0s for task train-fasttext.
+Agent timed out after 1000.0s for task conda-env-conflict-resolution.
+/Users/racso/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/events.py:89: RuntimeWarning: The executor did not finishing joining its threads within 300 seconds.
+  self._context.run(self._callback, *self._args)
+Agent timed out after 600.0s for task qemu-alpine-ssh.
+Test command timed out after 120.0s for task pytorch-model-cli.hard.
+Test command timed out after 120.0s for task pytorch-model-cli.easy.
+/Users/racso/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/events.py:89: RuntimeWarning: The executor did not finishing joining its threads within 300 seconds.
+  self._context.run(self._callback, *self._args)
+Agent timed out after 600.0s for task count-dataset-tokens.
+/Users/racso/.local/share/uv/python/cpython-3.13.12-macos-aarch64-none/lib/python3.13/asyncio/events.py:89: RuntimeWarning: The executor did not finishing joining its threads within 300 seconds.
+  self._context.run(self._callback, *self._args)
+Agent timed out after 360.0s for task get-bitcoin-nodes.
+  Running tasks (20/20, Accuracy: 50.00%) - Last: get-bitcoin-nodes ✓ ━━ 100% 0…
+
+Results Summary:
++-------------------+---------+
+| Metric            | Value   |
++===================+=========+
+| Resolved Trials   | 10      |
++-------------------+---------+
+| Unresolved Trials | 10      |
++-------------------+---------+
+| Accuracy          | 50.00%  |
++-------------------+---------+
+
+Results written to /Users/racso/kiwi/bench/runs/smoke-test-20/results.json

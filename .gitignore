@@ -5,3 +5,7 @@
 
 # local config
 .env
+
+# terminal-bench adapter build artifacts
+/bench/dist/
+/bench/runs/

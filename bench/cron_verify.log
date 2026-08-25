@@ -1,0 +1,16 @@
+Starting harness run
+Run ID: cron-fix-verify
+  Running tasks (1/1, Accuracy: 0.00%) - Last: cron-broken-network ✗ ━━ 100% 0:…
+
+Results Summary:
++-------------------+---------+
+| Metric            | Value   |
++===================+=========+
+| Resolved Trials   | 0       |
++-------------------+---------+
+| Unresolved Trials | 1       |
++-------------------+---------+
+| Accuracy          | 0.00%   |
++-------------------+---------+
+
+Results written to /Users/racso/kiwi/bench/runs/cron-fix-verify/results.json

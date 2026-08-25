@@ -1,0 +1,17 @@
+#!/bin/bash
+
+# This script is *sourced* into the live tmux session (not run as a
+# subprocess), so anything set at top level leaks into the interactive shell
+# for the rest of the trial. Keep it in a subshell so `set -e` stays scoped
+# to it, rather than killing the whole session (and its asciinema recording)
+# the moment a later interactive command — including the agent's own task
+# attempt — happens to exit non-zero.
+#
+# The kiwi binary itself is already in the container at this point (see
+# KiwiAgent.perform_task, which copies it in via copy_to_container before
+# this script runs) — no network needed here.
+(
+  set -e
+  install -m 0755 /installed-agent/kiwi /usr/local/bin/kiwi
+  kiwi --version
+)

@@ -12,10 +12,16 @@ import (
 	"iter"
 
 	sdk "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/azure"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
 	"github.com/oscar1223/kiwi/internal/llm"
 )
+
+// defaultAzureAPIVersion is used when a profile doesn't specify one. Azure
+// OpenAI's API version is a required query parameter, unlike plain OpenAI
+// where the wire format has no such versioning.
+const defaultAzureAPIVersion = "2024-10-21"
 
 type Provider struct {
 	client sdk.Client
@@ -31,8 +37,14 @@ type Options struct {
 	Name string
 }
 
+// defaultMaxRetries raises the SDK's default of 2. Kiwi's tool loop can burst
+// several requests in quick succession (parallel subagents, retried turns),
+// which trips provider rate limits well within 2 attempts; the SDK's own
+// backoff already respects Retry-After, so widening the budget is enough.
+const defaultMaxRetries = 5
+
 func New(opts Options) *Provider {
-	reqOpts := []option.RequestOption{}
+	reqOpts := []option.RequestOption{option.WithMaxRetries(defaultMaxRetries)}
 	if opts.APIKey != "" {
 		reqOpts = append(reqOpts, option.WithAPIKey(opts.APIKey))
 	}
@@ -44,6 +56,38 @@ func New(opts Options) *Provider {
 		name = "openai"
 	}
 	return &Provider{client: sdk.NewClient(reqOpts...), model: opts.Model, name: name}
+}
+
+type AzureOptions struct {
+	// Resource is the Azure OpenAI resource name, i.e. the "foo" in
+	// https://foo.openai.azure.com.
+	Resource string
+	APIKey   string
+	// Deployment is the Azure deployment name. Azure routes by deployment,
+	// not by a "model" field in the request body — the SDK's endpoint
+	// middleware rewrites the URL path for this, so Deployment still just
+	// flows into Provider.model the same way Options.Model does above.
+	Deployment string
+	// APIVersion defaults to defaultAzureAPIVersion when empty.
+	APIVersion string
+}
+
+// NewAzure builds a Provider for an Azure OpenAI deployment. Azure's wire
+// format is otherwise identical to plain OpenAI chat-completions — only the
+// URL shape (resource + deployment + api-version) and the auth header
+// differ, both handled by the SDK's azure subpackage.
+func NewAzure(opts AzureOptions) *Provider {
+	apiVersion := opts.APIVersion
+	if apiVersion == "" {
+		apiVersion = defaultAzureAPIVersion
+	}
+	endpoint := fmt.Sprintf("https://%s.openai.azure.com", opts.Resource)
+	client := sdk.NewClient(
+		option.WithMaxRetries(defaultMaxRetries),
+		azure.WithEndpoint(endpoint, apiVersion),
+		azure.WithAPIKey(opts.APIKey),
+	)
+	return &Provider{client: client, model: opts.Deployment, name: "azure"}
 }
 
 func (p *Provider) Name() string  { return p.name }

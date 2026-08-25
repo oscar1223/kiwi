@@ -90,7 +90,7 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 	broker := permission.NewBroker(mode, decider)
 	procs := proc.NewRegistry()
 
-	provider, err := config.BuildProvider(name, profile)
+	provider, err := config.BuildProvider(ctx, name, profile)
 	if err != nil {
 		if !errors.Is(err, config.ErrMissingAPIKey) {
 			store.Close()
@@ -229,7 +229,7 @@ func (s *runSession) rebuildAgent(ctx context.Context) (*agent.Agent, string, er
 	if err != nil {
 		return nil, "", err
 	}
-	provider, err := config.BuildProvider(name, profile)
+	provider, err := config.BuildProvider(ctx, name, profile)
 	if err != nil {
 		return nil, "", err
 	}

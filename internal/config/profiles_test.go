@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -120,7 +121,7 @@ func TestBuildProviderMissingAPIKeyIsErrMissingAPIKey(t *testing.T) {
 	profile := Profile{Provider: KindAnthropic, Model: "x", APIKeyEnv: "KIWI_TEST_MISSING_KEY_VAR"}
 	os.Unsetenv("KIWI_TEST_MISSING_KEY_VAR")
 
-	_, err := BuildProvider("sonnet", profile)
+	_, err := BuildProvider(context.Background(), "sonnet", profile)
 	if !errors.Is(err, ErrMissingAPIKey) {
 		t.Errorf("err = %v, want it to wrap ErrMissingAPIKey", err)
 	}

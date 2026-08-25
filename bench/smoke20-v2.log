@@ -1,0 +1,17 @@
+Starting harness run
+Run ID: smoke-test-20-v2
+Test command timed out after 120.0s for task swe-bench-fsspec.
+  Running tasks (20/20, Accuracy: 20.00%) - Last: build-tcc-qemu ✗ ━━━ 100% 0:1…
+
+Results Summary:
++-------------------+---------+
+| Metric            | Value   |
++===================+=========+
+| Resolved Trials   | 4       |
++-------------------+---------+
+| Unresolved Trials | 16      |
++-------------------+---------+
+| Accuracy          | 20.00%  |
++-------------------+---------+
+
+Results written to /Users/racso/kiwi/bench/runs/smoke-test-20-v2/results.json
