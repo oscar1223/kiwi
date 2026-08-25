@@ -99,13 +99,19 @@ func (r *Registry) Run(ctx context.Context, call llm.ToolCall) (string, error) {
 	return t.Run(ctx, call.Input)
 }
 
-// Default returns the tools every Kiwi agent starts with.
-func Default(workDir string, perms *permission.Broker) *Registry {
+// Default returns the tools every Kiwi agent starts with, plus any extra
+// tools the caller supplies — skills.LoadSkill when skills exist, MCP-server
+// tools when any are configured.
+func Default(workDir string, perms *permission.Broker, extra ...Tool) *Registry {
 	fs := &FS{WorkDir: workDir, Perms: perms}
-	return NewRegistry(
+	r := NewRegistry(
 		ReadFile{fs},
 		WriteFile{fs},
 		EditFile{fs},
 		Bash{WorkDir: workDir, Perms: perms},
 	)
+	for _, t := range extra {
+		r.Register(t)
+	}
+	return r
 }

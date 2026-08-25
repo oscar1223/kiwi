@@ -10,9 +10,12 @@ import (
 	"github.com/oscar1223/kiwi/internal/agent"
 	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
+	"github.com/oscar1223/kiwi/internal/mcp"
 	"github.com/oscar1223/kiwi/internal/permission"
+	"github.com/oscar1223/kiwi/internal/proc"
 	"github.com/oscar1223/kiwi/internal/prompt"
 	sessionstore "github.com/oscar1223/kiwi/internal/session"
+	"github.com/oscar1223/kiwi/internal/skills"
 	"github.com/oscar1223/kiwi/internal/tools"
 )
 
@@ -30,9 +33,31 @@ type runSession struct {
 	store   *sessionstore.Store
 	meta    *sessionstore.Meta
 	history []llm.Message
+
+	mcpManager *mcp.Manager
+	// procs is created once and reused across rebuilds — a background
+	// process started before a /model switch must keep running after it,
+	// unlike the MCP manager, which does need to reconnect.
+	procs *proc.Registry
+
+	// needsOnboarding is true when no profile's API key is set — the exact
+	// shape of a brand-new install. agent is nil in that case; the TUI runs
+	// its onboarding wizard instead of the normal banner, and the wizard's
+	// own rebuild is what constructs the real agent for the first time.
+	needsOnboarding bool
 }
 
-func (s *runSession) Close() error { return s.store.Close() }
+// Close releases everything the session opened: the sessions database, any
+// live MCP server connections, and any background processes still running.
+func (s *runSession) Close() error {
+	if s.mcpManager != nil {
+		s.mcpManager.Close()
+	}
+	if s.procs != nil {
+		s.procs.KillAll()
+	}
+	return s.store.Close()
+}
 
 func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decider permission.Decider) (*runSession, error) {
 	cwd := g.cwd
@@ -51,10 +76,6 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 	if err != nil {
 		return nil, err
 	}
-	provider, err := config.BuildProvider(name, profile)
-	if err != nil {
-		return nil, err
-	}
 
 	store, err := openSessionStore()
 	if err != nil {
@@ -66,22 +87,35 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 		return nil, err
 	}
 
-	projectFile, projectInstructions := config.ProjectInstructions(cwd)
-	promptOpts := prompt.Options{
-		WorkingDir:          cwd,
-		ProjectFile:         projectFile,
-		ProjectInstructions: projectInstructions,
-		ModeInstructions:    mode.Instructions(),
+	broker := permission.NewBroker(mode, decider)
+	procs := proc.NewRegistry()
+
+	provider, err := config.BuildProvider(name, profile)
+	if err != nil {
+		if !errors.Is(err, config.ErrMissingAPIKey) {
+			store.Close()
+			return nil, err
+		}
+		// A missing key is exactly what a brand-new install looks like — not
+		// a hard failure. assembleAgent (MCP connect, skills load, task
+		// tool) is skipped entirely: none of it matters until the wizard
+		// finishes and its own rebuild constructs the real agent.
+		return &runSession{
+			broker:          broker,
+			workDir:         cwd,
+			modelLabel:      "not configured",
+			store:           store,
+			meta:            meta,
+			history:         history,
+			procs:           procs,
+			needsOnboarding: true,
+		}, nil
 	}
 
-	broker := permission.NewBroker(mode, decider)
+	a, promptOpts, mgr := assembleAgent(ctx, provider, cwd, mode, broker, procs)
 
 	return &runSession{
-		agent: &agent.Agent{
-			Provider: provider,
-			Tools:    tools.Default(cwd, broker),
-			System:   prompt.Build(promptOpts),
-		},
+		agent:      a,
 		broker:     broker,
 		workDir:    cwd,
 		modelLabel: fmt.Sprintf("%s/%s", provider.Name(), provider.Model()),
@@ -89,7 +123,125 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 		store:      store,
 		meta:       meta,
 		history:    history,
+		mcpManager: mgr,
+		procs:      procs,
 	}, nil
+}
+
+// assembleAgent gathers everything an Agent needs beyond its provider:
+// project instructions, MCP servers, skills, and the task tool's two
+// subagent toolsets. Both newSession's initial build and rebuildAgent (used
+// after a /model, /mcp, or /skill change) go through this, so "what an agent
+// looks like" has one definition.
+//
+// An MCP server that fails to connect is reported via warnings printed to
+// stderr rather than failing the whole build — this mirrors Connect's own
+// per-server error isolation: one broken server should not stop Kiwi from
+// starting.
+func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode permission.Mode, broker *permission.Broker, procs *proc.Registry) (*agent.Agent, prompt.Options, *mcp.Manager) {
+	projectFile, projectInstructions := config.ProjectInstructions(cwd)
+
+	loadedSkills, err := skills.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kiwi: warning: loading skills:", err)
+		loadedSkills = map[string]skills.Skill{}
+	}
+
+	mgr, mcpTools, mcpErrs := mcp.Connect(ctx, broker)
+	for _, e := range mcpErrs {
+		fmt.Fprintln(os.Stderr, "kiwi: warning:", e)
+	}
+
+	promptOpts := prompt.Options{
+		WorkingDir:          cwd,
+		ProjectFile:         projectFile,
+		ProjectInstructions: projectInstructions,
+		ModeInstructions:    mode.Instructions(),
+		Extra:               []string{skills.Summary(loadedSkills)},
+	}
+	// The subagent prompt skips ModeInstructions: a subagent has no
+	// permission mode of its own, only the (already restricted, in the
+	// explore case) toolset it was handed.
+	subagentPromptOpts := promptOpts
+	subagentPromptOpts.ModeInstructions = ""
+
+	extraTools := make([]tools.Tool, 0, len(mcpTools)+3)
+	for _, t := range mcpTools {
+		extraTools = append(extraTools, t)
+	}
+	if len(loadedSkills) > 0 {
+		extraTools = append(extraTools, tools.LoadSkill{Skills: loadedSkills})
+	}
+	extraTools = append(extraTools,
+		tools.BackgroundBash{WorkDir: cwd, Perms: broker, Procs: procs},
+		tools.BackgroundOutput{Procs: procs},
+		tools.KillShell{Procs: procs},
+	)
+
+	fullTools := tools.Default(cwd, broker, extraTools...)
+
+	// generalNames snapshots the parent's toolset *before* task is added to
+	// it below — Subset copies into a new Registry, so registering task into
+	// fullTools afterward cannot leak into generalTools and hand a subagent
+	// the ability to recurse.
+	generalNames := make([]string, 0, len(fullTools.Schemas()))
+	for _, sc := range fullTools.Schemas() {
+		generalNames = append(generalNames, sc.Name)
+	}
+	generalTools := fullTools.Subset(generalNames...)
+
+	exploreFS := &tools.FS{WorkDir: cwd, Perms: broker}
+	exploreTools := tools.NewRegistry(
+		tools.ReadFile{FS: exploreFS},
+		tools.ReadOnlyBash{Bash: tools.Bash{WorkDir: cwd, Perms: broker}},
+	)
+
+	fullTools.Register(agent.TaskTool{
+		Provider:     provider,
+		System:       prompt.Build(subagentPromptOpts),
+		ExploreTools: exploreTools,
+		GeneralTools: generalTools,
+	})
+
+	a := &agent.Agent{
+		Provider: provider,
+		Tools:    fullTools,
+		System:   prompt.Build(promptOpts),
+	}
+	return a, promptOpts, mgr
+}
+
+// rebuildAgent reconstructs the agent from current on-disk configuration,
+// used as the TUI's Options.Rebuild callback after a /model, /mcp, or /skill
+// change persists something new. It replaces sess's own MCP manager so old
+// server connections are not leaked across a reload.
+//
+// It always follows cfg.Current rather than any --model override the run
+// started with: a /model switch persists a new Current specifically so a
+// rebuild picks it up, and re-applying a stale --model here would silently
+// undo that switch on the very next unrelated /config or /skill change.
+func (s *runSession) rebuildAgent(ctx context.Context) (*agent.Agent, string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, "", err
+	}
+	name, profile, err := cfg.Profile("")
+	if err != nil {
+		return nil, "", err
+	}
+	provider, err := config.BuildProvider(name, profile)
+	if err != nil {
+		return nil, "", err
+	}
+
+	a, _, mgr := assembleAgent(ctx, provider, s.workDir, s.broker.Mode(), s.broker, s.procs)
+
+	if s.mcpManager != nil {
+		s.mcpManager.Close()
+	}
+	s.mcpManager = mgr
+
+	return a, fmt.Sprintf("%s/%s", provider.Name(), provider.Model()), nil
 }
 
 // openSessionStore opens the single, shared sessions database that every

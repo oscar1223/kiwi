@@ -9,6 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/oscar1223/kiwi/internal/agent"
@@ -16,6 +17,7 @@ import (
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/oscar1223/kiwi/internal/prompt"
 	"github.com/oscar1223/kiwi/internal/session"
+	"github.com/oscar1223/kiwi/internal/telemetry"
 )
 
 // Options configures a TUI session.
@@ -37,6 +39,22 @@ type Options struct {
 	// use.
 	Store     *session.Store
 	SessionID string
+	// BaseContext seeds every turn's cancellable context. It is where
+	// process-wide values live — telemetry's OS-user id, in particular —
+	// that a turn's own context.WithCancel must inherit to keep traces
+	// attributed correctly. Nil falls back to context.Background(), which is
+	// what the tests below use.
+	BaseContext context.Context
+	// Rebuild reconstructs the agent from current on-disk configuration —
+	// model profile, MCP servers, skills — after a /model, /mcp, or /skill
+	// change persists something new. Nil is valid: those commands then
+	// report success without the agent actually changing underneath them,
+	// which is what the tests below rely on.
+	Rebuild func() (*agent.Agent, string, error)
+	// NeedsOnboarding is true when Agent is nil because no model provider is
+	// configured yet — the shape of a brand-new install. Init runs the
+	// setup wizard instead of the normal banner in that case.
+	NeedsOnboarding bool
 }
 
 // Model is the Bubble Tea model for Kiwi's terminal interface.
@@ -56,6 +74,10 @@ type Model struct {
 	height int
 
 	history []llm.Message
+	// sessionUsage accumulates token usage across every turn of this TUI
+	// session (not the provider's own lifetime total) — "how much have I
+	// spent since I opened kiwi", shown in the status line.
+	sessionUsage llm.Usage
 
 	// Turn state. gen increments on every turn so events from a cancelled
 	// turn can be recognised and dropped.
@@ -71,6 +93,23 @@ type Model struct {
 	spoke   bool
 
 	pending *permission.Request
+
+	// activePick/activeText hold an open command-flow prompt (from /model,
+	// /config, /mcp, /skill, /memory). Mutually exclusive with each other and
+	// with pending: only one modal is ever on screen.
+	activePick *pickState
+	activeText *textState
+	// flowBusy is true while a /model, /config, /mcp, /skill or /memory flow
+	// is running in its own goroutine. Gates chat submission and starting a
+	// second flow the same way busy gates them for a running turn.
+	flowBusy bool
+
+	// cmdSuggestIndex is the highlighted row in the "/" autocomplete list;
+	// lastSlashInput is what the input held the last time it was updated, so
+	// the index can be reset to 0 exactly when the filtered list changes
+	// rather than on every keystroke regardless.
+	cmdSuggestIndex int
+	lastSlashInput  string
 
 	// saveTokens serializes background persistence across turns: each
 	// persistTurn call takes the single token before writing and returns it
@@ -117,6 +156,13 @@ func (m *Model) LogAutoDecision(req *permission.Request, allowed bool) {
 }
 
 func (m *Model) Init() tea.Cmd {
+	if m.opts.NeedsOnboarding {
+		// No banner: onboardingFlow opens with its own welcome and takes
+		// over immediately, the same way any other flow does — just started
+		// automatically instead of waiting for the user to type a command.
+		m.runFlow(m.onboardingFlow)
+		return tea.Batch(m.events.next(), m.input.Focus())
+	}
 	return tea.Batch(
 		m.events.next(),
 		m.input.Focus(),
@@ -173,6 +219,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Applied immediately and in memory: the next turn must see what just
 		// happened regardless of how long persisting it to disk takes.
 		m.history = append(m.history, msg.messages...)
+		m.sessionUsage.InputTokens += msg.usage.InputTokens
+		m.sessionUsage.OutputTokens += msg.usage.OutputTokens
 		m.busy = false
 		if m.cancel != nil {
 			m.cancel()
@@ -215,6 +263,57 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case autoDecisionMsg:
 		return m, tea.Batch(tea.Println(renderAutoDecision(msg.req, msg.allowed)), m.events.next())
+
+	case *pickRequest:
+		m.activePick = &pickState{req: msg}
+		return m, m.events.next()
+
+	case *textRequest:
+		ti := textinput.New()
+		ti.Placeholder = msg.placeholder
+		ti.SetValue(msg.defaultVal)
+		if msg.secret {
+			ti.EchoMode = textinput.EchoPassword
+		}
+		ti.Focus()
+		ti.SetWidth(max(20, m.width-4))
+		m.activeText = &textState{req: msg, input: ti}
+		return m, m.events.next()
+
+	case systemMsg:
+		return m, tea.Batch(tea.Println(bullet(styleDim.Render("·"), styleDim.Render(msg.text))), m.events.next())
+
+	case errMsg:
+		return m, tea.Batch(tea.Println(bullet(styleErr.Render("✗"), styleErr.Render(msg.err.Error()))), m.events.next())
+
+	case printLinesMsg:
+		prints := make([]tea.Cmd, 0, len(msg.lines))
+		for _, l := range msg.lines {
+			prints = append(prints, tea.Println(l))
+		}
+		return m, tea.Batch(tea.Sequence(prints...), m.events.next())
+
+	case clearHistoryMsg:
+		m.history = nil
+		return m, tea.Batch(tea.Println(styleDim.Render("  memory cleared")), m.events.next())
+
+	case sessionSwitchedMsg:
+		m.opts.SessionID = msg.sessionID
+		m.history = msg.history
+		line := styleDim.Render("  switched to session " + msg.sessionID + " (" + msg.title + ")")
+		return m, tea.Batch(tea.Println(line), m.events.next())
+
+	case requestRebuildMsg:
+		return m, tea.Batch(m.rebuildAgent(), m.events.next())
+
+	case agentRebuiltMsg:
+		m.opts.Agent = msg.agent
+		m.opts.ModelLabel = msg.modelLabel
+		return m, tea.Batch(tea.Println(styleDim.Render("  reloaded: "+msg.modelLabel)), m.events.next())
+
+	case flowDoneMsg:
+		m.flowBusy = false
+		return m, m.events.next()
 	}
 
 	var cmd tea.Cmd
@@ -243,6 +342,53 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.activePick != nil {
+		return m, m.onPickKey(key)
+	}
+	if m.activeText != nil {
+		return m, m.onTextKey(msg, key)
+	}
+
+	// Slash-command autocomplete: while the input is "/" plus an unfinished
+	// command name, arrows browse the filtered list and enter/tab complete
+	// to the highlighted one instead of submitting. Once the text exactly
+	// matches a known command, enter falls through to the normal submit path
+	// below — typing the whole thing by hand and hitting enter must still
+	// just run it.
+	if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
+		if m.input.Value() != m.lastSlashInput {
+			m.cmdSuggestIndex = 0
+			m.lastSlashInput = m.input.Value()
+		}
+		if m.cmdSuggestIndex >= len(suggestions) {
+			m.cmdSuggestIndex = len(suggestions) - 1
+		}
+		switch key {
+		case "up":
+			if m.cmdSuggestIndex > 0 {
+				m.cmdSuggestIndex--
+			}
+			return m, nil
+		case "down":
+			if m.cmdSuggestIndex < len(suggestions)-1 {
+				m.cmdSuggestIndex++
+			}
+			return m, nil
+		case "tab":
+			m.input.SetValue(suggestions[m.cmdSuggestIndex].Name + " ")
+			m.input.CursorEnd()
+			return m, nil
+		case "enter":
+			if !isKnownCommand(m.input.Value()) {
+				m.input.SetValue(suggestions[m.cmdSuggestIndex].Name + " ")
+				m.input.CursorEnd()
+				return m, nil
+			}
+			// Falls through to the ordinary "enter" case below: the text
+			// already names a real command, so run it.
+		}
+	}
+
 	switch key {
 	case "ctrl+c":
 		if m.busy {
@@ -264,13 +410,19 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "shift+tab":
+		if m.flowBusy || m.opts.Agent == nil {
+			// No agent yet (onboarding still running) means applyMode below
+			// would dereference a nil Agent.System — and switching modes
+			// mid-flow makes no sense regardless of whether an agent exists.
+			return m, nil
+		}
 		next := m.opts.Broker.Mode().Next()
 		m.opts.Broker.SetMode(next)
 		m.applyMode(next)
 		return m, tea.Println(renderModeChange(next))
 
 	case "enter":
-		if m.busy {
+		if m.busy || m.flowBusy || m.opts.Agent == nil {
 			return m, nil
 		}
 		text := strings.TrimSpace(m.input.Value())
@@ -300,7 +452,12 @@ func (m *Model) submit(text string) tea.Cmd {
 	m.tail = ""
 	m.inFence = false
 
-	ctx, cancel := context.WithCancel(context.Background())
+	base := m.opts.BaseContext
+	if base == nil {
+		base = context.Background()
+	}
+	base = telemetry.WithSessionID(base, m.opts.SessionID)
+	ctx, cancel := context.WithCancel(base)
 	m.cancel = cancel
 
 	history := append([]llm.Message(nil), m.history...)
@@ -343,6 +500,68 @@ func (m *Model) persistTurn(gen int, turnMessages []llm.Message) tea.Cmd {
 // cancelTurn tears down the running turn. Bumping the generation makes every
 // event still in flight irrelevant, and cancelling the context stops the model
 // stream and kills any child process a tool started.
+// onPickKey drives an open picker: arrows move the highlight, enter resolves
+// it, esc cancels. Resolving prints a one-line record into scrollback — the
+// same reason permission answers are printed — so what was chosen has a
+// permanent trace, not just a state that vanished with the modal.
+func (m *Model) onPickKey(key string) tea.Cmd {
+	p := m.activePick
+	switch key {
+	case "up", "k":
+		p.up()
+		if p.req.onHighlight != nil {
+			p.req.onHighlight(p.selected().Value)
+		}
+		return nil
+	case "down", "j":
+		p.down()
+		if p.req.onHighlight != nil {
+			p.req.onHighlight(p.selected().Value)
+		}
+		return nil
+	case "enter":
+		m.activePick = nil
+		choice := p.selected()
+		p.req.resp <- pickResult{value: choice.Value, ok: true}
+		return tea.Println(bullet(styleDim.Render("·"), styleDim.Render(p.req.title+": "+choice.Label)))
+	case "esc", "ctrl+c":
+		m.activePick = nil
+		if p.req.onCancel != nil {
+			p.req.onCancel()
+		}
+		p.req.resp <- pickResult{ok: false}
+		return tea.Println(styleDim.Render("  cancelled"))
+	}
+	return nil
+}
+
+// onTextKey drives an open text prompt: everything but enter/esc is handed to
+// the embedded textinput.
+func (m *Model) onTextKey(msg tea.KeyPressMsg, key string) tea.Cmd {
+	t := m.activeText
+	switch key {
+	case "enter":
+		m.activeText = nil
+		value := t.input.Value()
+		t.req.resp <- textResult{value: value, ok: true}
+		shown := value
+		switch {
+		case t.req.secret && value != "":
+			shown = styleDim.Render("••••••••")
+		case shown == "":
+			shown = styleDim.Render("(empty)")
+		}
+		return tea.Println(bullet(styleDim.Render("·"), styleDim.Render(t.req.title+": ")+shown))
+	case "esc", "ctrl+c":
+		m.activeText = nil
+		t.req.resp <- textResult{ok: false}
+		return tea.Println(styleDim.Render("  cancelled"))
+	}
+	var cmd tea.Cmd
+	t.input, cmd = t.input.Update(msg)
+	return cmd
+}
+
 func (m *Model) cancelTurn() tea.Cmd {
 	if m.cancel != nil {
 		m.cancel()
@@ -445,10 +664,17 @@ func (m *Model) applyMode(mode permission.Mode) {
 func (m *Model) View() tea.View {
 	var b strings.Builder
 
-	if m.pending != nil {
+	switch {
+	case m.pending != nil:
 		b.WriteString(styleWarn.Render("  allow? [y/N] "))
 		b.WriteString("\n")
-	} else {
+	case m.activePick != nil:
+		b.WriteString(renderPick(m.activePick))
+		b.WriteString("\n")
+	case m.activeText != nil:
+		b.WriteString(renderTextPrompt(m.activeText))
+		b.WriteString("\n")
+	default:
 		if m.tail != "" {
 			b.WriteString("  " + styleKiwi.Render(m.tail) + "\n")
 		}
@@ -461,14 +687,83 @@ func (m *Model) View() tea.View {
 
 	b.WriteString(m.statusLine())
 	b.WriteString("\n")
-	b.WriteString(stylePrompt.Render("› "))
-	b.WriteString(m.input.View())
+
+	blocked := m.pending != nil || m.activePick != nil || m.activeText != nil
+	if !blocked {
+		b.WriteString(stylePrompt.Render("› "))
+		b.WriteString(m.input.View())
+
+		if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
+			b.WriteString("\n")
+			b.WriteString(renderSlashSuggestions(suggestions, m.cmdSuggestIndex))
+		}
+	}
 
 	v := tea.NewView(b.String())
-	if m.pending == nil {
+	switch {
+	case m.activeText != nil:
+		v.Cursor = m.activeText.input.Cursor()
+	case !blocked:
 		v.Cursor = m.input.Cursor()
 	}
 	return v
+}
+
+// renderPick draws an arrow-navigable list: the highlighted option gets the
+// kiwi-coloured marker, everything else stays dim.
+func renderPick(p *pickState) string {
+	var b strings.Builder
+	b.WriteString(styleWarn.Render("  " + p.req.title))
+	b.WriteString(styleDim.Render("  (↑↓ enter · esc cancels)"))
+	b.WriteString("\n")
+	for i, opt := range p.req.options {
+		if i == p.index {
+			b.WriteString(styleKiwi.Render("  ▸ " + opt.Label))
+		} else {
+			b.WriteString(styleDim.Render("    " + opt.Label))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func renderTextPrompt(t *textState) string {
+	var b strings.Builder
+	b.WriteString(styleWarn.Render("  " + t.req.title))
+	b.WriteString(styleDim.Render("  (enter confirms · esc cancels)"))
+	b.WriteString("\n  ")
+	b.WriteString(t.input.View())
+	return b.String()
+}
+
+// maxSlashSuggestions caps how many rows the "/" autocomplete shows at once,
+// so a broad query (bare "/") does not push the input off screen.
+const maxSlashSuggestions = 6
+
+func renderSlashSuggestions(suggestions []commandSpec, index int) string {
+	shown := suggestions
+	if len(shown) > maxSlashSuggestions {
+		shown = shown[:maxSlashSuggestions]
+	}
+	if index < 0 || index >= len(shown) {
+		index = 0
+	}
+	var b strings.Builder
+	for i, c := range shown {
+		line := sprintf("%-12s %s", c.Name, c.Desc)
+		if i == index {
+			b.WriteString(styleKiwi.Render("  ▸ " + line))
+		} else {
+			b.WriteString(styleDim.Render("    " + line))
+		}
+		if i < len(shown)-1 {
+			b.WriteString("\n")
+		}
+	}
+	if len(suggestions) > maxSlashSuggestions {
+		fmt.Fprintf(&b, "\n%s", styleDim.Render(sprintf("    … %d more", len(suggestions)-maxSlashSuggestions)))
+	}
+	return b.String()
 }
 
 func (m *Model) statusLine() string {
@@ -480,6 +775,9 @@ func (m *Model) statusLine() string {
 	if len(m.history) > 0 {
 		parts = append(parts, styleDim.Render(sprintf("%d msgs", len(m.history))))
 	}
+	if total := m.sessionUsage.InputTokens + m.sessionUsage.OutputTokens; total > 0 {
+		parts = append(parts, styleDim.Render(formatTokenCount(total)+" tok"))
+	}
 	line := strings.Join(parts, styleDim.Render(" · "))
 	hint := styleDim.Render("shift+tab: mode")
 	gap := m.width - lipgloss.Width(line) - lipgloss.Width(hint)
@@ -487,6 +785,16 @@ func (m *Model) statusLine() string {
 		return line
 	}
 	return line + strings.Repeat(" ", gap) + hint
+}
+
+// formatTokenCount renders a token total compactly for the status line:
+// exact below 1000, one decimal of "k" above it — precise enough to be
+// useful, short enough to leave room for everything else on the line.
+func formatTokenCount(n int) string {
+	if n < 1000 {
+		return sprintf("%d", n)
+	}
+	return sprintf("%.1fk", float64(n)/1000)
 }
 
 func elapsed(since time.Time) string {
@@ -497,12 +805,36 @@ func elapsed(since time.Time) string {
 	return d.String()
 }
 
+var welcomePrompts = []string{
+	"explain this repository",
+	"fix the failing test",
+	"add a README",
+}
+
 func banner(model, workDir string) string {
 	title := lipgloss.NewStyle().Foreground(colKiwi).Bold(true).Render("🥝 kiwi")
-	return sprintf("\n%s  %s\n%s\n",
+
+	modes := sprintf("  %s confirms everything · %s is read-only · %s applies edits — cycle with %s",
+		modeStyle(permission.ModeAsk).Render("ask"),
+		modeStyle(permission.ModePlan).Render("plan"),
+		modeStyle(permission.ModeWork).Render("work"),
+		styleDim.Render("shift+tab"))
+
+	var examples strings.Builder
+	examples.WriteString(styleDim.Render("  try:"))
+	for _, p := range welcomePrompts {
+		examples.WriteString(sprintf(" \"%s\"", p))
+	}
+
+	hint := styleDim.Render("  type ") + styleUser.Render("/") + styleDim.Render(" to see all commands")
+
+	return sprintf("\n%s  %s\n%s\n%s\n%s\n%s\n",
 		title,
 		styleDim.Render(model),
-		styleDim.Render("  "+workDir))
+		styleDim.Render("  "+workDir),
+		modes,
+		examples.String(),
+		hint)
 }
 
 func renderToolCall(call llm.ToolCall) string {
@@ -566,6 +898,77 @@ func renderPermissionPrompt(req *permission.Request) string {
 }
 
 // command handles slash commands typed into the prompt.
+// commandSpec is one entry in the "/" autocomplete list and in /help's
+// command table — the single source of truth for both, so they cannot drift
+// apart.
+type commandSpec struct {
+	Name string
+	Desc string
+}
+
+var commandRegistry = []commandSpec{
+	{"/ask", "switch to ask mode — confirm everything"},
+	{"/plan", "switch to plan mode — read-only"},
+	{"/work", "switch to work mode — edits apply automatically"},
+	{"/settings", "open the settings menu"},
+	{"/model", "switch or manage model profiles"},
+	{"/config", "manage .env variables"},
+	{"/mcp", "manage MCP servers"},
+	{"/skill", "manage skills"},
+	{"/theme", "switch the colour theme"},
+	{"/sessions", "switch between saved conversations"},
+	{"/memory", "view or clear conversation memory"},
+	{"/clear", "forget the conversation"},
+	{"/help", "show this list"},
+	{"/quit", "exit kiwi"},
+}
+
+// filterCommands returns registry entries whose name contains q as a
+// substring (case-insensitive), or every entry when q is empty — so typing
+// bare "/" shows the full list, narrowing as more is typed.
+func filterCommands(q string) []commandSpec {
+	q = strings.ToLower(strings.TrimPrefix(q, "/"))
+	if q == "" {
+		return commandRegistry
+	}
+	var out []commandSpec
+	for _, c := range commandRegistry {
+		if strings.Contains(strings.ToLower(strings.TrimPrefix(c.Name, "/")), q) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// isKnownCommand reports whether text is exactly one registered command name
+// (arguments after a space are fine — /ask and /ask now both count).
+func isKnownCommand(text string) bool {
+	name := strings.Fields(strings.TrimSpace(text))
+	if len(name) == 0 {
+		return false
+	}
+	for _, c := range commandRegistry {
+		if c.Name == name[0] {
+			return true
+		}
+	}
+	return false
+}
+
+// slashSuggestions returns the autocomplete list for the current input, or
+// nil when it does not apply — not focused on a "/"-prefixed command, or
+// another modal already owns the keyboard.
+func (m *Model) slashSuggestions() []commandSpec {
+	if m.pending != nil || m.activePick != nil || m.activeText != nil {
+		return nil
+	}
+	v := m.input.Value()
+	if !strings.HasPrefix(v, "/") || strings.ContainsAny(v, " \n") {
+		return nil
+	}
+	return filterCommands(v)
+}
+
 func (m *Model) command(text string) (tea.Cmd, bool) {
 	if !strings.HasPrefix(text, "/") {
 		return nil, false
@@ -584,22 +987,105 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 	case "/quit", "/exit":
 		m.quitting = true
 		return tea.Quit, true
+	case "/model":
+		return m.runFlow(m.modelFlow), true
+	case "/config":
+		return m.runFlow(m.configFlow), true
+	case "/mcp":
+		return m.runFlow(m.mcpFlow), true
+	case "/skill":
+		return m.runFlow(m.skillFlow), true
+	case "/theme":
+		return m.runFlow(m.themeFlow), true
+	case "/sessions":
+		return m.runFlow(m.sessionsFlow), true
+	case "/memory":
+		snapshot := append([]llm.Message(nil), m.history...)
+		return m.runFlow(func(ctx context.Context) { m.memoryFlow(ctx, snapshot) }), true
+	case "/settings":
+		return m.runFlow(m.settingsFlow), true
 	}
 	return tea.Println(styleErr.Render("  unknown command: " + text)), true
 }
 
-func helpText() string {
-	rows := [][2]string{
-		{"/ask /plan /work", "switch permission mode"},
-		{"/clear", "forget the conversation"},
-		{"/help", "this list"},
-		{"/quit", "exit"},
-		{"shift+tab", "cycle mode"},
-		{"esc", "cancel the running turn"},
-		{"ctrl+c", "cancel, or exit when idle"},
+// runFlow launches a /model, /config, /mcp, /skill or /memory flow in its own
+// goroutine. Flows read like a straight-line script — ask this, act on that —
+// by blocking on Events.Pick/Text/Confirm the same way a tool call blocks on
+// permission.Broker.Ask; Update stays the only goroutine that ever touches
+// Model state, everything a flow decides comes back as a message.
+func (m *Model) runFlow(fn func(ctx context.Context)) tea.Cmd {
+	m.flowBusy = true
+	base := m.opts.BaseContext
+	if base == nil {
+		base = context.Background()
 	}
+	ctx, cancel := context.WithCancel(base)
+	go func() {
+		defer cancel()
+		fn(ctx)
+		m.events.send(context.Background(), flowDoneMsg{})
+	}()
+	return nil
+}
+
+// rebuildAgent asks Options.Rebuild (if any) to reconstruct the agent from
+// current on-disk config, off the Update goroutine — MCP servers reconnect
+// over real subprocesses, which must never block the UI.
+func (m *Model) rebuildAgent() tea.Cmd {
+	rebuild := m.opts.Rebuild
+	if rebuild == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		a, label, err := rebuild()
+		if err != nil {
+			return errMsg{err}
+		}
+		return agentRebuiltMsg{agent: a, modelLabel: label}
+	}
+}
+
+// applyRebuild is rebuildAgent's synchronous twin: it runs Options.Rebuild
+// directly instead of wrapping it in a tea.Cmd, and sends the resulting
+// message itself. Only the onboarding wizard uses it, and only because it
+// must: the wizard's flow goroutine sends agentRebuiltMsg before it returns,
+// and runFlow only sends flowDoneMsg after that — since both land on the
+// same FIFO channel from the same goroutine, agentRebuiltMsg is guaranteed
+// to reach Update before flowBusy clears, so there is no window where the
+// user could submit a chat turn against a still-nil Agent. Routing through
+// the async rebuildAgent Cmd instead would reopen exactly that window.
+func (m *Model) applyRebuild(ctx context.Context) {
+	rebuild := m.opts.Rebuild
+	if rebuild == nil {
+		return
+	}
+	a, label, err := rebuild()
+	if err != nil {
+		m.events.send(ctx, errMsg{err})
+		return
+	}
+	m.events.send(ctx, agentRebuiltMsg{agent: a, modelLabel: label})
+}
+
+// keybindRows are the non-slash keybindings /help lists after the command
+// table — commandRegistry is the source of truth for the commands
+// themselves, so that list and the "/" autocomplete can never drift apart.
+var keybindRows = [][2]string{
+	{"/ (typing)", "autocomplete commands as you type"},
+	{"shift+tab", "cycle mode"},
+	{"↑↓ enter esc", "navigate a menu"},
+	{"esc", "cancel the running turn"},
+	{"ctrl+c", "cancel, or exit when idle"},
+}
+
+func helpText() string {
 	var b strings.Builder
-	for _, r := range rows {
+	for _, c := range commandRegistry {
+		fmt.Fprintf(&b, "  %s  %s\n",
+			styleTool.Render(fmt.Sprintf("%-18s", c.Name)),
+			styleDim.Render(c.Desc))
+	}
+	for _, r := range keybindRows {
 		fmt.Fprintf(&b, "  %s  %s\n",
 			styleTool.Render(fmt.Sprintf("%-18s", r[0])),
 			styleDim.Render(r[1]))

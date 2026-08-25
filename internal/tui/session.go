@@ -3,6 +3,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/oscar1223/kiwi/internal/agent"
@@ -44,6 +46,31 @@ type (
 		gen     int
 		history []llm.Message
 		err     error
+	}
+
+	// Command-flow messages: sent by /model, /config, /mcp, /skill, /memory
+	// running in their own goroutine (see runFlow) back to Update, the only
+	// place allowed to touch Model state.
+	systemMsg         struct{ text string }
+	errMsg            struct{ err error }
+	printLinesMsg     struct{ lines []string }
+	clearHistoryMsg   struct{}
+	requestRebuildMsg struct{}
+	agentRebuiltMsg   struct {
+		agent      *agent.Agent
+		modelLabel string
+	}
+	flowDoneMsg struct{}
+
+	// sessionSwitchedMsg reports that /sessions picked a different (or brand
+	// new) session. Update handles it by swapping m.opts.SessionID and
+	// m.history — no other state needs touching, since every turn is
+	// already persisted immediately (persistTurn), so there is nothing
+	// "pending" that a jump could lose.
+	sessionSwitchedMsg struct {
+		sessionID string
+		history   []llm.Message
+		title     string
 	}
 
 	// permissionMsg asks the user to approve an action.
@@ -140,4 +167,21 @@ func runTurn(ctx context.Context, a *agent.Agent, gen int, input string, history
 		messages: res.Messages,
 		usage:    res.Usage,
 	})
+}
+
+// relativeTime renders a timestamp the way a human reads a session list:
+// coarse buckets, not a precise duration nobody needs. Kept in sync with (but
+// independent of) cmd/kiwi's copy — internal/tui cannot import cmd/kiwi.
+func relativeTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }

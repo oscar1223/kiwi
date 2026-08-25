@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/spf13/cobra"
 )
@@ -57,4 +59,8 @@ Run ` + "`kiwi`" + ` with no arguments to start the interactive interface, or
 	cmd.AddCommand(newAskCmd(&g))
 	cmd.AddCommand(newSessionCmd(&g))
 	return cmd
+}
+
+func telemetryVersionAttr() attribute.KeyValue {
+	return attribute.String("service.version", version)
 }

@@ -14,7 +14,9 @@ import (
 	"fmt"
 
 	"github.com/oscar1223/kiwi/internal/llm"
+	"github.com/oscar1223/kiwi/internal/telemetry"
 	"github.com/oscar1223/kiwi/internal/tools"
+	"golang.org/x/sync/errgroup"
 )
 
 // DefaultMaxSteps bounds how many model↔tool round trips one turn may take.
@@ -24,6 +26,10 @@ const DefaultMaxSteps = 50
 // Observer receives turn progress. Every method must tolerate being called
 // from the agent's goroutine and must not block for long. A nil Observer is
 // valid; use NopObserver to avoid nil checks.
+//
+// Implementations must also be safe for concurrent calls: multiple task
+// (subagent) calls in the same batch run in their own goroutines, and each
+// reports through the same Observer.
 type Observer interface {
 	OnText(delta string)
 	OnToolCall(call llm.ToolCall)
@@ -74,6 +80,13 @@ func (a *Agent) Run(ctx context.Context, input string, history []llm.Message, ob
 		maxSteps = DefaultMaxSteps
 	}
 
+	ctx, turnSpan := telemetry.StartTurn(ctx, a.Provider.Name(), a.Provider.Model())
+	// turnErr is a different variable from any tool's own error below: the
+	// deferred EndTurn must record how the *turn* ended, not the outcome of
+	// whichever tool happened to run last.
+	var turnErr error
+	defer func() { telemetry.EndTurn(turnSpan, turnErr) }()
+
 	// Working copy: history stays untouched for the caller.
 	convo := make([]llm.Message, 0, len(history)+4)
 	convo = append(convo, history...)
@@ -87,6 +100,7 @@ func (a *Agent) Run(ctx context.Context, input string, history []llm.Message, ob
 
 		assistant, usage, err := a.stream(ctx, convo, obs)
 		if err != nil {
+			turnErr = err
 			return nil, err
 		}
 		if usage != nil {
@@ -105,46 +119,79 @@ func (a *Agent) Run(ctx context.Context, input string, history []llm.Message, ob
 			return res, nil
 		}
 
-		for _, call := range assistant.ToolCalls {
-			// Check cancellation between tools: a cancelled turn should not
-			// keep firing the remaining calls of a batch.
+		// task calls are dispatched together into their own goroutines before
+		// the sequential loop below even starts, so several delegated
+		// subagents run concurrently with each other — and with whatever
+		// non-task calls follow — rather than one at a time. Everything else
+		// stays strictly sequential: a model that asks for two file edits or
+		// two bash commands in one step should not have them race.
+		results := make([]toolCallResult, len(assistant.ToolCalls))
+		var group errgroup.Group
+		for i, call := range assistant.ToolCalls {
+			if call.Name != TaskName {
+				continue
+			}
+			i, call := i, call
+			group.Go(func() error {
+				results[i] = a.runToolCall(ctx, call, obs)
+				return nil // errors travel in the result, not the group
+			})
+		}
+
+		for i, call := range assistant.ToolCalls {
+			if call.Name == TaskName {
+				continue // already dispatched above
+			}
 			if err := ctx.Err(); err != nil {
+				group.Wait()
+				turnErr = err
 				return nil, err
 			}
-
-			obs.OnToolCall(call)
-			output, runErr := a.Tools.Run(ctx, call)
-
-			// A cancelled tool cancels the turn; any other failure becomes an
-			// observation so the model can correct itself.
-			if runErr != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
-				return nil, runErr
+			results[i] = a.runToolCall(ctx, call, obs)
+			if results[i].cancelErr != nil {
+				group.Wait()
+				turnErr = results[i].cancelErr
+				return nil, results[i].cancelErr
 			}
+		}
+		group.Wait()
 
-			isErr := runErr != nil
-			if isErr {
-				output = "Error: " + runErr.Error()
+		// Reassembled in the model's original order regardless of which
+		// pass computed each result, so a cancelled call is reported
+		// deterministically no matter which goroutine hit it first.
+		for _, r := range results {
+			if r.cancelErr != nil {
+				turnErr = r.cancelErr
+				return nil, r.cancelErr
 			}
-			obs.OnToolResult(call, output, isErr)
-
 			msg := llm.Message{
 				Role:       llm.RoleTool,
-				Content:    output,
-				ToolCallID: call.ID,
-				ToolName:   call.Name,
-				IsError:    isErr,
+				Content:    r.output,
+				ToolCallID: r.call.ID,
+				ToolName:   r.call.Name,
+				IsError:    r.isErr,
 			}
 			convo = append(convo, msg)
 			turn = append(turn, msg)
 		}
 	}
 
-	return nil, fmt.Errorf("%w (%d)", ErrMaxSteps, maxSteps)
+	turnErr = fmt.Errorf("%w (%d)", ErrMaxSteps, maxSteps)
+	return nil, turnErr
 }
 
 // stream consumes one model response, forwarding text deltas as they arrive
 // and assembling the complete assistant message.
-func (a *Agent) stream(ctx context.Context, convo []llm.Message, obs Observer) (*llm.Message, *llm.Usage, error) {
+func (a *Agent) stream(ctx context.Context, convo []llm.Message, obs Observer) (final *llm.Message, usage *llm.Usage, err error) {
+	ctx, span := telemetry.StartModelCall(ctx, a.Provider.Model())
+	defer func() {
+		var in, out int
+		if usage != nil {
+			in, out = usage.InputTokens, usage.OutputTokens
+		}
+		telemetry.EndModelCall(span, in, out, err)
+	}()
+
 	req := llm.Request{
 		System:    a.System,
 		Messages:  convo,
@@ -152,12 +199,9 @@ func (a *Agent) stream(ctx context.Context, convo []llm.Message, obs Observer) (
 		MaxTokens: a.MaxTokens,
 	}
 
-	var (
-		final *llm.Message
-		usage *llm.Usage
-	)
-	for ev, err := range a.Provider.Stream(ctx, req) {
-		if err != nil {
+	for ev, streamErr := range a.Provider.Stream(ctx, req) {
+		if streamErr != nil {
+			err = streamErr
 			return nil, nil, err
 		}
 		switch ev.Type {
@@ -168,13 +212,48 @@ func (a *Agent) stream(ctx context.Context, convo []llm.Message, obs Observer) (
 			usage = ev.Usage
 		}
 	}
-	if err := ctx.Err(); err != nil {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		err = ctxErr
 		return nil, nil, err
 	}
 	if final == nil {
-		return nil, nil, errors.New("agent: provider stream ended without a final message")
+		err = errors.New("agent: provider stream ended without a final message")
+		return nil, nil, err
 	}
 	return final, usage, nil
+}
+
+// toolCallResult is one tool call's outcome, collected regardless of whether
+// it ran as part of the sequential pass or a parallel task batch, so both
+// can be merged back into the model's original call order afterward.
+type toolCallResult struct {
+	call   llm.ToolCall
+	output string
+	isErr  bool
+	// cancelErr is set only for context.Canceled/DeadlineExceeded — the one
+	// case that must abort the whole turn rather than become an observation.
+	cancelErr error
+}
+
+// runToolCall executes one tool call and reports it through obs. It is safe
+// to call from multiple goroutines at once, each with its own call — see
+// Observer's own concurrency note.
+func (a *Agent) runToolCall(ctx context.Context, call llm.ToolCall, obs Observer) toolCallResult {
+	obs.OnToolCall(call)
+	toolCtx, toolSpan := telemetry.StartTool(ctx, call.Name)
+	output, callErr := a.Tools.Run(toolCtx, call)
+	telemetry.EndTool(toolSpan, callErr != nil)
+
+	if callErr != nil && (errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded)) {
+		return toolCallResult{call: call, cancelErr: callErr}
+	}
+
+	isErr := callErr != nil
+	if isErr {
+		output = "Error: " + callErr.Error()
+	}
+	obs.OnToolResult(call, output, isErr)
+	return toolCallResult{call: call, output: output, isErr: isErr}
 }
 
 // DecodeInput is a helper for tools: unmarshal a call's input into v.

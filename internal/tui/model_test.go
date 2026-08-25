@@ -47,6 +47,12 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 	case "ctrl+d":
 		return tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
+	case "tab":
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	default:
 		r := []rune(name)
 		if len(r) != 1 {
@@ -59,7 +65,7 @@ func key(name string) tea.KeyPressMsg {
 // TestKeyHelperMatchesRealEncoding guards the helper itself: if these stop
 // matching, every key test below would be asserting against a fiction.
 func TestKeyHelperMatchesRealEncoding(t *testing.T) {
-	for _, name := range []string{"esc", "enter", "shift+tab", "ctrl+c", "ctrl+d", "y", "n", "a"} {
+	for _, name := range []string{"esc", "enter", "shift+tab", "ctrl+c", "ctrl+d", "up", "down", "tab", "y", "n", "a"} {
 		if got := key(name).String(); got != name {
 			t.Errorf("key(%q).String() = %q", name, got)
 		}
@@ -390,5 +396,83 @@ func TestEnterDoesNotSubmitWhileBusy(t *testing.T) {
 	m = update(t, m, key("enter"))
 	if m.gen != 3 {
 		t.Error("a second turn was started while one was running")
+	}
+}
+
+func TestFormatTokenCount(t *testing.T) {
+	cases := map[int]string{
+		0:     "0",
+		42:    "42",
+		999:   "999",
+		1000:  "1.0k",
+		1234:  "1.2k",
+		12400: "12.4k",
+	}
+	for in, want := range cases {
+		if got := formatTokenCount(in); got != want {
+			t.Errorf("formatTokenCount(%d) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestTurnDoneAccumulatesSessionUsage(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.gen = 1
+	m.busy = true
+
+	m = update(t, m, turnDoneMsg{
+		gen:      1,
+		messages: []llm.Message{{Role: llm.RoleAssistant, Content: "ok"}},
+		usage:    llm.Usage{InputTokens: 100, OutputTokens: 20},
+	})
+	if m.sessionUsage.InputTokens != 100 || m.sessionUsage.OutputTokens != 20 {
+		t.Errorf("sessionUsage = %+v", m.sessionUsage)
+	}
+
+	// A second turn accumulates, it does not replace.
+	m.gen = 2
+	m.busy = true
+	m = update(t, m, turnDoneMsg{
+		gen:      2,
+		messages: []llm.Message{{Role: llm.RoleAssistant, Content: "ok again"}},
+		usage:    llm.Usage{InputTokens: 50, OutputTokens: 10},
+	})
+	if m.sessionUsage.InputTokens != 150 || m.sessionUsage.OutputTokens != 30 {
+		t.Errorf("sessionUsage after second turn = %+v", m.sessionUsage)
+	}
+}
+
+func TestStatusLineOmitsTokensBeforeAnyUsage(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.width = 80
+	if strings.Contains(m.statusLine(), "tok") {
+		t.Error("status line shows a token count before any turn has run")
+	}
+}
+
+func TestStatusLineShowsAccumulatedTokens(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.width = 80
+	m.sessionUsage = llm.Usage{InputTokens: 900, OutputTokens: 100}
+	if !strings.Contains(m.statusLine(), "1.0k tok") {
+		t.Errorf("status line = %q, want it to show 1.0k tok", m.statusLine())
+	}
+}
+
+// The welcome banner is the whole onboarding for a user who already has a
+// provider configured — it must explain modes, show example prompts, and
+// point at "/" now that autocomplete exists to back it up.
+func TestBannerShowsModesExamplesAndSlashHint(t *testing.T) {
+	got := ansi.ReplaceAllString(banner("fake/fake-1", "/tmp/proj"), "")
+
+	for _, want := range []string{
+		"fake/fake-1", "/tmp/proj",
+		"ask", "plan", "work", "shift+tab",
+		"explain this repository",
+		"type / to see all commands",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("banner() missing %q:\n%s", want, got)
+		}
 	}
 }

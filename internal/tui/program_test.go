@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/oscar1223/kiwi/internal/agent"
+	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/llm/llmtest"
 	"github.com/oscar1223/kiwi/internal/permission"
@@ -63,6 +65,16 @@ type programOpts struct {
 	history []llm.Message
 	store   *session.Store
 	sessID  string
+	// workDir overrides the temp dir the program otherwise creates for
+	// itself — needed by tests that must create sessions (session.Store)
+	// against the same project dir the running program will use.
+	workDir string
+	// needsOnboarding and rebuild let a test exercise the setup wizard: with
+	// it set, the Model starts with no Agent, the same shape a fresh install
+	// is in, and rebuild stands in for Options.Rebuild (normally cmd/kiwi's
+	// job) to hand back the fake agent once the wizard finishes.
+	needsOnboarding bool
+	rebuild         func() (*agent.Agent, string, error)
 }
 
 func runProgramOpts(t *testing.T, po programOpts) (string, *Model) {
@@ -71,22 +83,32 @@ func runProgramOpts(t *testing.T, po programOpts) (string, *Model) {
 	fake := &llmtest.Fake{Steps: po.steps}
 	ev := NewEvents()
 	broker := permission.NewBroker(po.mode, ev)
-	dir := t.TempDir()
+	dir := po.workDir
+	if dir == "" {
+		dir = t.TempDir()
+	}
 
-	m := New(Options{
-		Agent: &agent.Agent{
+	var a *agent.Agent
+	if !po.needsOnboarding {
+		a = &agent.Agent{
 			Provider: fake,
 			Tools:    tools.Default(dir, broker),
 			System:   "test",
-		},
-		Broker:        broker,
-		WorkDir:       dir,
-		ModelLabel:    "fake/fake-1",
-		PromptOptions: prompt.Options{WorkingDir: dir},
-		Events:        ev,
-		History:       po.history,
-		Store:         po.store,
-		SessionID:     po.sessID,
+		}
+	}
+
+	m := New(Options{
+		Agent:           a,
+		Broker:          broker,
+		WorkDir:         dir,
+		ModelLabel:      "fake/fake-1",
+		PromptOptions:   prompt.Options{WorkingDir: dir},
+		Events:          ev,
+		History:         po.history,
+		Store:           po.store,
+		SessionID:       po.sessID,
+		NeedsOnboarding: po.needsOnboarding,
+		Rebuild:         po.rebuild,
 	})
 	broker.OnAutoDecision(ev.LogAutoDecision)
 	keys := po.keys
@@ -443,5 +465,305 @@ func TestProgramCompactsAndPersistsTheSummary(t *testing.T) {
 	}
 	if saved[1].Content != "the summary" {
 		t.Errorf("the summarizer's output was not stored: %+v", saved[1])
+	}
+}
+
+// End-to-end: typing "/memory", picking "View recent messages", entering a
+// count, and seeing the prior turn echoed back — the full pipeline from
+// slash-command dispatch through runFlow's goroutine, Events.Pick/Text,
+// Update's rendering, and back. Unit tests above cover each piece in
+// isolation; this is the one that would catch a wiring mistake between them.
+func TestProgramMemoryFlowEndToEnd(t *testing.T) {
+	out, _ := runProgramOpts(t, programOpts{
+		mode: permission.ModeAsk,
+		history: []llm.Message{
+			{Role: llm.RoleUser, Content: "what does kiwi do"},
+			{Role: llm.RoleAssistant, Content: "it is a local coding agent"},
+		},
+		keys: []string{"/memory\r", "\r" /* View recent messages */, "3\r" /* how many */},
+	})
+
+	if !strings.Contains(out, "Memory") {
+		t.Errorf("the memory picker never opened:\n%s", out)
+	}
+	if !strings.Contains(out, "what does kiwi do") {
+		t.Errorf("the prior user turn was not shown:\n%s", out)
+	}
+	if !strings.Contains(out, "it is a local coding agent") {
+		t.Errorf("the prior assistant turn was not shown:\n%s", out)
+	}
+}
+
+// Ordinary chat input must stay blocked for the whole time a flow is
+// running, not just while a picker happens to be visible — the gap between
+// dispatch and the first prompt appearing must not let a message slip through.
+func TestProgramCannotSubmitChatWhileAFlowIsOpen(t *testing.T) {
+	out, _ := runProgramOpts(t, programOpts{
+		mode: permission.ModeAsk,
+		keys: []string{"/memory\r", "should not reach the model\r"},
+	})
+
+	if strings.Contains(out, "should not reach the model") {
+		t.Errorf("chat text typed while the memory picker was open leaked through:\n%s", out)
+	}
+}
+
+// End-to-end: /mcp → "+ Add MCP server" → remote → URL → HTTP transport →
+// no headers, and the server then shows up in the list. This exercises the
+// full remote-server config path added for M5 (previously only stdio was
+// reachable from the TUI at all).
+func TestProgramAddRemoteMCPServerEndToEnd(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	out, _ := runProgramOpts(t, programOpts{
+		mode: permission.ModeAsk,
+		keys: []string{
+			"/mcp\r",                    // open the picker: only "+ Add MCP server" exists
+			"\r",                        // pick it
+			"myserver\r",                // server name
+			"\x1b[B\r",                  // down to "Remote URL (HTTP or SSE)", then select it
+			"https://example.com/mcp\r", // URL
+			"\r",                        // transport: Streamable HTTP (first option)
+			"\r",                        // headers: leave empty
+			"\x1b",                      // esc: close the /mcp picker once we're back at the list
+		},
+	})
+
+	if !strings.Contains(out, "saved") {
+		t.Errorf("the server was not reported as saved:\n%s", out)
+	}
+	// Proves the remote branch specifically ran, not a coincidental stdio
+	// path with the same number of prompts: the server's own list entry (via
+	// describeServer) must show its URL and transport, and the flow must
+	// never have asked for a stdio command at all.
+	if !strings.Contains(out, "https://example.com/mcp") {
+		t.Errorf("the server URL never appeared, so the remote branch may not have run:\n%s", out)
+	}
+	if strings.Contains(out, "Command to run") {
+		t.Errorf("the stdio branch ran instead of the remote one:\n%s", out)
+	}
+}
+
+// End-to-end: the setup wizard runs automatically (no /command needed) on a
+// session with no provider configured, writes .env and kiwi.json, and the
+// very next chat turn reaches the freshly rebuilt agent — proving the
+// agentRebuiltMsg-before-flowDoneMsg ordering that rules out the nil-Agent
+// race described in applyRebuild's doc comment.
+func TestProgramOnboardingWizardEndToEnd(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Cleanup(func() { os.Unsetenv("ANTHROPIC_API_KEY") }) // onboardingFlow sets it directly, outside t.Setenv's tracking
+
+	postWizardFake := &llmtest.Fake{Steps: []llmtest.Step{{Text: "hello after setup"}}}
+	rebuild := func() (*agent.Agent, string, error) {
+		return &agent.Agent{
+			Provider: postWizardFake,
+			Tools:    tools.NewRegistry(),
+			System:   "post-onboarding",
+		}, "anthropic/claude-sonnet-5", nil
+	}
+
+	out, m := runProgramOpts(t, programOpts{
+		needsOnboarding: true,
+		rebuild:         rebuild,
+		mode:            permission.ModeAsk,
+		keys: []string{
+			"\r",                // pick provider: Anthropic (first option)
+			"\r",                // model name: accept the default
+			"sk-ant-test-key\r", // paste the API key
+			"go ahead\r",        // a real chat turn once onboarding is done
+		},
+	})
+
+	if !strings.Contains(out, "Setup complete") {
+		t.Errorf("the wizard never reported completion:\n%s", out)
+	}
+	if !strings.Contains(out, "hello after setup") {
+		t.Errorf("the post-onboarding agent was never reached:\n%s", out)
+	}
+	if strings.Contains(out, "sk-ant-test-key") {
+		t.Errorf("the API key leaked into scrollback in plaintext:\n%s", out)
+	}
+	if m.opts.Agent == nil {
+		t.Error("Agent is still nil after onboarding completed")
+	}
+
+	f, err := config.OpenEnvFile()
+	if err != nil {
+		t.Fatalf("OpenEnvFile: %v", err)
+	}
+	if v, ok := f.Get("ANTHROPIC_API_KEY"); !ok || v != "sk-ant-test-key" {
+		t.Errorf("ANTHROPIC_API_KEY in .env = (%q, %v)", v, ok)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Current != "sonnet" {
+		t.Errorf("cfg.Current = %q, want sonnet", cfg.Current)
+	}
+}
+
+// Cancelling the wizard partway through must leave the TUI safely idle —
+// chat still blocked (no agent exists), no panic — rather than half-applied.
+func TestProgramOnboardingCancelledLeavesChatSafelyBlocked(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	out, m := runProgramOpts(t, programOpts{
+		needsOnboarding: true,
+		rebuild: func() (*agent.Agent, string, error) {
+			t.Fatal("rebuild must not be called when onboarding was cancelled")
+			return nil, "", nil
+		},
+		mode: permission.ModeAsk,
+		keys: []string{
+			"\x1b", // esc during the provider picker: cancel
+			"this should not reach any agent\r",
+		},
+	})
+
+	if !strings.Contains(out, "Setup skipped") {
+		t.Errorf("cancelling did not report skipped setup:\n%s", out)
+	}
+	if m.opts.Agent != nil {
+		t.Error("Agent should still be nil after a cancelled wizard")
+	}
+	// enter must have been refused, not silently swallowed: the typed text
+	// stays sitting in the input box rather than being cleared by a submit()
+	// that then (with a nil Agent) would have panicked.
+	if got := m.input.Value(); got != "this should not reach any agent" {
+		t.Errorf("input.Value() = %q, want the unsent text still there", got)
+	}
+}
+
+// /settings groups the existing flows behind one menu — verified end-to-end
+// by opening it and picking "Model profiles", landing exactly where /model
+// itself would.
+func TestProgramSettingsMenuOpensModelFlow(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	out, _ := runProgramOpts(t, programOpts{
+		mode: permission.ModeAsk,
+		keys: []string{
+			"/settings\r", // open settings
+			"\r",          // "Model profiles" is the first option
+			"\x1b",        // esc out of the model picker
+			"\x1b",        // esc out of the settings picker
+		},
+	})
+
+	if !strings.Contains(out, "Settings") {
+		t.Errorf("the settings menu never opened:\n%s", out)
+	}
+	if !strings.Contains(out, "Model profile") {
+		t.Errorf("picking \"Model profiles\" did not open the model flow:\n%s", out)
+	}
+}
+
+// /sessions must let the user jump between saved conversations for the
+// current project without losing anything — each turn is already persisted
+// immediately, so a switch is just swapping which history the model shows.
+func TestProgramSessionsFlowSwitchesActiveHistory(t *testing.T) {
+	store := newTUIStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	first, err := store.Create(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, first.ID, []llm.Message{
+		{Role: llm.RoleUser, Content: "first session question"},
+		{Role: llm.RoleAssistant, Content: "first session answer"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := store.Create(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, second.ID, []llm.Message{
+		{Role: llm.RoleUser, Content: "second session question"},
+		{Role: llm.RoleAssistant, Content: "second session answer"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// updated_at has only second resolution, so which of first/second sorts
+	// first in sessionsFlow's list is not guaranteed by this test's timing —
+	// ask the store the same way sessionsFlow does, instead of assuming an
+	// order, so the test does not depend on how fast it happens to run.
+	listed, err := store.List(ctx, dir, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downs := -1
+	for i, s := range listed {
+		if s.ID == first.ID {
+			downs = i
+		}
+	}
+	if downs < 0 {
+		t.Fatalf("the first session did not show up in List(): %+v", listed)
+	}
+
+	_, m := runProgramOpts(t, programOpts{
+		mode:    permission.ModeAsk,
+		workDir: dir,
+		store:   store,
+		sessID:  second.ID,
+		history: []llm.Message{
+			{Role: llm.RoleUser, Content: "second session question"},
+			{Role: llm.RoleAssistant, Content: "second session answer"},
+		},
+		keys: []string{
+			"/sessions\r",                          // open the picker
+			strings.Repeat("\x1b[B", downs) + "\r", // move to "first", then pick it
+		},
+	})
+
+	if m.opts.SessionID != first.ID {
+		t.Errorf("SessionID = %q, want the first session %q", m.opts.SessionID, first.ID)
+	}
+	if len(m.history) != 2 || m.history[0].Content != "first session question" {
+		t.Errorf("history after switching = %+v, want the first session's messages", m.history)
+	}
+}
+
+// Picking "+ New session" must start with empty history and a fresh id,
+// distinct from every existing session for the project.
+func TestProgramSessionsFlowCreatesNewSession(t *testing.T) {
+	store := newTUIStore(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	existing, err := store.Create(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, existing.ID, []llm.Message{
+		{Role: llm.RoleUser, Content: "old question"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, m := runProgramOpts(t, programOpts{
+		mode:    permission.ModeAsk,
+		workDir: dir,
+		store:   store,
+		sessID:  existing.ID,
+		history: []llm.Message{{Role: llm.RoleUser, Content: "old question"}},
+		keys: []string{
+			"/sessions\r",
+			"\x1b[B\r", // down once, to "+ New session", then pick it
+		},
+	})
+
+	if m.opts.SessionID == existing.ID || m.opts.SessionID == "" {
+		t.Errorf("SessionID after creating a new session = %q, want a fresh id", m.opts.SessionID)
+	}
+	if len(m.history) != 0 {
+		t.Errorf("history after creating a new session = %+v, want empty", m.history)
 	}
 }

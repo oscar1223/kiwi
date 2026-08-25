@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/oscar1223/kiwi/internal/session"
+	"github.com/oscar1223/kiwi/internal/telemetry"
 	"github.com/spf13/cobra"
 )
 
@@ -139,6 +141,12 @@ func runAsk(ctx context.Context, g *globalFlags, opts askOptions, stdout, stderr
 		return err
 	}
 	defer sess.Close()
+	if sess.needsOnboarding {
+		// `ask` is non-interactive: there is nobody to run the setup wizard
+		// for. Fail with the same fix a human would reach for, rather than
+		// dereferencing a nil agent below.
+		return errors.New("no model provider is configured yet — run `kiwi` once to set one up")
+	}
 
 	if !opts.quiet {
 		sess.broker.OnAutoDecision(func(req *permission.Request, allowed bool) {
@@ -151,6 +159,7 @@ func runAsk(ctx context.Context, g *globalFlags, opts askOptions, stdout, stderr
 	}
 
 	obs := &cliObserver{out: stdout, progress: stderr, quiet: opts.quiet}
+	ctx = telemetry.WithSessionID(ctx, sess.meta.ID)
 	res, err := sess.agent.Run(ctx, opts.input, sess.history, obs)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -176,18 +185,32 @@ func runAsk(ctx context.Context, g *globalFlags, opts askOptions, stdout, stderr
 
 // cliObserver streams the answer to stdout and progress to stderr, so that
 // redirecting stdout captures only the answer.
+//
+// Its methods can be called concurrently — several `task` subagent calls in
+// one batch each report through the same Observer from their own goroutine
+// (see agent.Observer's concurrency note) — so writes are serialized with a
+// mutex. Without it nothing would panic, but two interleaved Fprintf calls
+// could tear a line's bytes across each other on screen.
 type cliObserver struct {
 	out      io.Writer
 	progress io.Writer
 	quiet    bool
+
+	mu sync.Mutex
 }
 
-func (o *cliObserver) OnText(delta string) { fmt.Fprint(o.out, delta) }
+func (o *cliObserver) OnText(delta string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fmt.Fprint(o.out, delta)
+}
 
 func (o *cliObserver) OnToolCall(call llm.ToolCall) {
 	if o.quiet {
 		return
 	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	fmt.Fprintf(o.progress, "· %s %s\n", call.Name, truncate(string(call.Input), 120))
 }
 
@@ -199,6 +222,8 @@ func (o *cliObserver) OnToolResult(_ llm.ToolCall, output string, isErr bool) {
 	if isErr {
 		marker = "  ✗"
 	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	fmt.Fprintf(o.progress, "%s %s\n", marker, truncate(output, 120))
 }
 

@@ -43,6 +43,9 @@ type Profile struct {
 type Config struct {
 	Current  string             `json:"current"`
 	Profiles map[string]Profile `json:"profiles"`
+	// Theme names the TUI colour theme to use. Empty means the default
+	// ("kiwi-dark") — omitted from fresh configs so the JSON stays minimal.
+	Theme string `json:"theme,omitempty"`
 
 	// path records where this config was loaded from, for Save.
 	path string
@@ -64,7 +67,7 @@ func Default() *Config {
 			},
 			"gpt": {
 				Provider:  KindOpenAI,
-				Model:     "gpt-5",
+				Model:     "gpt-5.5",
 				APIKeyEnv: "OPENAI_API_KEY",
 			},
 			"local": {
@@ -169,13 +172,19 @@ func (c *Config) ProfileNames() []string {
 	return names
 }
 
+// ErrMissingAPIKey means a profile's required environment variable is unset —
+// the one condition callers may want to treat as "run the onboarding wizard"
+// rather than a hard failure, since it is exactly what a brand-new install
+// looks like before any provider has been configured.
+var ErrMissingAPIKey = errors.New("config: missing API key")
+
 // BuildProvider instantiates the provider for a profile.
 func BuildProvider(name string, p Profile) (llm.Provider, error) {
 	var apiKey string
 	if p.APIKeyEnv != "" {
 		apiKey = os.Getenv(p.APIKeyEnv)
 		if apiKey == "" {
-			return nil, fmt.Errorf("profile %q needs %s to be set in the environment", name, p.APIKeyEnv)
+			return nil, fmt.Errorf("%w: profile %q needs %s to be set in the environment", ErrMissingAPIKey, name, p.APIKeyEnv)
 		}
 	}
 
@@ -213,4 +222,57 @@ func ProjectInstructions(dir string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// Profile management errors.
+var (
+	ErrProfileExists       = errors.New("config: profile already exists")
+	ErrProfileNotFound     = errors.New("config: profile not found")
+	ErrCannotRemoveCurrent = errors.New("config: cannot remove the current profile")
+)
+
+// AddProfile saves a new named profile and persists the config.
+func (c *Config) AddProfile(name string, p Profile) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("config: profile name is required")
+	}
+	if _, exists := c.Profiles[name]; exists {
+		return fmt.Errorf("%w: %q", ErrProfileExists, name)
+	}
+	if c.Profiles == nil {
+		c.Profiles = map[string]Profile{}
+	}
+	c.Profiles[name] = p
+	return c.Save()
+}
+
+// RemoveProfile deletes a profile and persists the config. The current
+// profile cannot be removed — switch away from it first.
+func (c *Config) RemoveProfile(name string) error {
+	if name == c.Current {
+		return fmt.Errorf("%w: %q", ErrCannotRemoveCurrent, name)
+	}
+	if _, exists := c.Profiles[name]; !exists {
+		return fmt.Errorf("%w: %q", ErrProfileNotFound, name)
+	}
+	delete(c.Profiles, name)
+	return c.Save()
+}
+
+// SetCurrent switches the default profile and persists the config.
+func (c *Config) SetCurrent(name string) error {
+	if _, exists := c.Profiles[name]; !exists {
+		return fmt.Errorf("%w: %q", ErrProfileNotFound, name)
+	}
+	c.Current = name
+	return c.Save()
+}
+
+// MaskValue renders a secret for display: enough to recognise it, not enough
+// to reconstruct it from a screenshot.
+func MaskValue(v string) string {
+	if len(v) <= 6 {
+		return strings.Repeat("*", len(v))
+	}
+	return v[:3] + "..." + v[len(v)-2:]
 }
