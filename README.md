@@ -5,8 +5,6 @@ sobre tu sistema de archivos, ejecución de comandos y una TUI inspirada en herr
 como Claude Code. Corre en tu máquina, guarda cada sesión localmente en SQLite y solo actúa
 sobre tu proyecto con el permiso que tú le des.
 
-Esta es la reescritura en Go del [prototipo original en Python](prototype/README.md).
-
 ## Instalación
 
 ```sh

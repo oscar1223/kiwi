@@ -3,11 +3,5 @@
 /dist/
 *.test
 
-# Python prototype
-venv
-__pycache__
-
 # local config
 .env
-mcp_servers.json
-models.json
