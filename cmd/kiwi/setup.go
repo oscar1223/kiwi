@@ -11,6 +11,7 @@ import (
 	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/mcp"
+	"github.com/oscar1223/kiwi/internal/memory"
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/oscar1223/kiwi/internal/proc"
 	"github.com/oscar1223/kiwi/internal/prompt"
@@ -152,12 +153,17 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 		fmt.Fprintln(os.Stderr, "kiwi: warning:", e)
 	}
 
+	// Memory is read once per build, not per turn: a rebuild is exactly what
+	// happens after the user edits it via /memory, and re-reading two files on
+	// every request would buy nothing but syscalls.
+	mem := memory.New(cwd)
+
 	promptOpts := prompt.Options{
 		WorkingDir:          cwd,
 		ProjectFile:         projectFile,
 		ProjectInstructions: projectInstructions,
 		ModeInstructions:    mode.Instructions(),
-		Extra:               []string{skills.Summary(loadedSkills)},
+		Extra:               []string{mem.Block(), skills.Summary(loadedSkills)},
 	}
 	// The subagent prompt skips ModeInstructions: a subagent has no
 	// permission mode of its own, only the (already restricted, in the
@@ -195,6 +201,12 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 		tools.ReadFile{FS: exploreFS},
 		tools.ReadOnlyBash{Bash: tools.Bash{WorkDir: cwd, Perms: broker}},
 	)
+
+	// Registered after the generalTools snapshot above, alongside task and for
+	// the same reason: a subagent's context is thrown away when it returns, so
+	// nothing it decides is worth writing into the memory every future session
+	// pays for. Only the agent the user is actually talking to remembers.
+	fullTools.Register(tools.Remember{Store: mem, Perms: broker})
 
 	fullTools.Register(agent.TaskTool{
 		Provider:     provider,

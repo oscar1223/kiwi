@@ -416,15 +416,23 @@ func TestProgramCompactsAndPersistsTheSummary(t *testing.T) {
 	sess, _ := store.Create(ctx, "/proj")
 
 	// Seed enough turns to cross both compaction thresholds at once: more
-	// messages than DefaultCompactOptions.KeepRecent (20), and enough total
-	// characters to exceed its CharBudget. A single oversized message would
-	// exceed the budget but not the count, and Compact treats anything within
-	// KeepRecent messages of the end as "too recent to touch" regardless of
-	// size — this needs real turns, not one giant one.
+	// messages than DefaultKeepRecent (20), and enough estimated tokens to
+	// exceed the budget for the fake provider's model. A single oversized
+	// message would exceed the budget but not the count, and Compact treats
+	// anything within KeepRecent messages of the end as "too recent to touch"
+	// regardless of size — this needs real turns, not one giant one.
+	//
+	// The filler is sized from the budget rather than hard-coded, so this test
+	// keeps testing compaction rather than quietly becoming a no-op the next
+	// time the window table or historyShare moves.
+	const turns = 15
+	budget := session.CompactOptionsFor(new(llmtest.Fake).Model()).TokenBudget
+	filler := strings.Repeat("filler ", (budget*4)/(turns*7)+1)
+
 	var seed []llm.Message
-	for i := range 15 {
+	for i := range turns {
 		seed = append(seed,
-			llm.Message{Role: llm.RoleUser, Content: strings.Repeat(fmt.Sprintf("turn%d ", i), 300)},
+			llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("turn%d %s", i, filler)},
 			llm.Message{Role: llm.RoleAssistant, Content: "ok"},
 		)
 	}
@@ -474,13 +482,17 @@ func TestProgramCompactsAndPersistsTheSummary(t *testing.T) {
 // Update's rendering, and back. Unit tests above cover each piece in
 // isolation; this is the one that would catch a wiring mistake between them.
 func TestProgramMemoryFlowEndToEnd(t *testing.T) {
+	// /memory reads the saved-note files to label its menu; point them at a
+	// temp dir so the test never touches the developer's real memory.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
 	out, _ := runProgramOpts(t, programOpts{
 		mode: permission.ModeAsk,
 		history: []llm.Message{
 			{Role: llm.RoleUser, Content: "what does kiwi do"},
 			{Role: llm.RoleAssistant, Content: "it is a local coding agent"},
 		},
-		keys: []string{"/memory\r", "\r" /* View recent messages */, "3\r" /* how many */},
+		keys: []string{"/memory\r", "\r" /* Conversation */, "\r" /* View recent messages */, "3\r" /* how many */},
 	})
 
 	if !strings.Contains(out, "Memory") {
@@ -765,5 +777,106 @@ func TestProgramSessionsFlowCreatesNewSession(t *testing.T) {
 	}
 	if len(m.history) != 0 {
 		t.Errorf("history after creating a new session = %+v, want empty", m.history)
+	}
+}
+
+// /compact must summarize on demand even when the conversation is nowhere
+// near the automatic threshold — that is the entire point of asking for it by
+// hand — and the result has to reach both the screen and the database.
+func TestProgramCompactOnDemand(t *testing.T) {
+	store := newTUIStore(t)
+	ctx := context.Background()
+	sess, _ := store.Create(ctx, "/proj")
+
+	var seed []llm.Message
+	for i := range 10 {
+		seed = append(seed,
+			llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("question %d", i)},
+			llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)},
+		)
+	}
+	if err := store.Append(ctx, sess.ID, seed); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, m := runProgramOpts(t, programOpts{
+		steps:   []llmtest.Step{{Text: "the summary"}},
+		mode:    permission.ModeAsk,
+		keys:    []string{"/compact\r"},
+		history: history,
+		store:   store,
+		sessID:  sess.ID,
+	})
+
+	if !strings.Contains(out, "compacted") {
+		t.Errorf("the compaction was never reported to the user:\n%s", out)
+	}
+	if len(m.history) >= len(history) {
+		t.Errorf("history is %d messages, no shorter than the original %d", len(m.history), len(history))
+	}
+	if len(m.history) == 0 || m.history[0].Content != "(summary of earlier context in this session)" {
+		t.Fatalf("the live history was not replaced with the compacted one: %+v", m.history)
+	}
+
+	saved, err := store.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) == 0 || saved[0].Content != "(summary of earlier context in this session)" {
+		t.Errorf("the compacted history was not persisted:\n%+v", saved)
+	}
+}
+
+// An empty conversation must say so rather than calling the model.
+func TestProgramCompactWithNothingToCompact(t *testing.T) {
+	out, _ := runProgramOpts(t, programOpts{
+		mode: permission.ModeAsk,
+		keys: []string{"/compact\r"},
+	})
+
+	if !strings.Contains(out, "empty") {
+		t.Errorf("compacting an empty conversation did not explain itself:\n%s", out)
+	}
+}
+
+// Typing @file must reach the model with the file inlined, while the
+// transcript keeps showing what the user actually typed.
+func TestProgramExpandsFileMentions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("MENTIONED-BODY"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, m := runProgramOpts(t, programOpts{
+		steps:   []llmtest.Step{{Text: "read it"}},
+		mode:    permission.ModeAsk,
+		workDir: dir,
+		keys:    []string{"summarize @note.txt\r"},
+	})
+
+	if !strings.Contains(out, "attached note.txt") {
+		t.Errorf("the attachment was not reported:\n%s", out)
+	}
+	if len(m.history) == 0 {
+		t.Fatal("no history was recorded")
+	}
+	if !strings.Contains(m.history[0].Content, "MENTIONED-BODY") {
+		t.Errorf("the file was not inlined into the message sent to the model: %q", m.history[0].Content)
+	}
+}
+
+func TestProgramReportsUnreadableMentions(t *testing.T) {
+	out, _ := runProgramOpts(t, programOpts{
+		steps: []llmtest.Step{{Text: "ok"}},
+		mode:  permission.ModeAsk,
+		keys:  []string{"look at @missing.txt\r"},
+	})
+
+	if !strings.Contains(out, "could not read") {
+		t.Errorf("a mention that resolved to nothing was not reported:\n%s", out)
 	}
 }

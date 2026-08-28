@@ -12,6 +12,8 @@ import (
 	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/mcp"
+	"github.com/oscar1223/kiwi/internal/memory"
+	"github.com/oscar1223/kiwi/internal/session"
 	"github.com/oscar1223/kiwi/internal/skills"
 )
 
@@ -268,21 +270,139 @@ func (m *Model) settingsFlow(ctx context.Context) {
 	}
 }
 
+// --- /compact ---
+
+// manualKeepRecent is how much of the tail /compact leaves verbatim. It is
+// deliberately shorter than the automatic pass's DefaultKeepRecent: automatic
+// compaction is housekeeping that must not disturb the task in flight, while
+// asking for it by hand is a deliberate "clear the decks" — keeping 20
+// messages would routinely be the whole conversation and compact nothing at
+// all, which reads as the command being broken.
+const manualKeepRecent = 6
+
+// compactFlow summarizes the conversation on demand instead of waiting for it
+// to cross the automatic threshold. It runs as a flow because summarizing is a
+// model call: it must not block Update, and it has to be cancellable.
+//
+// snapshot is the history as of the moment /compact was typed; chat input is
+// blocked for the duration (flowBusy), so it cannot go stale underneath us.
+func (m *Model) compactFlow(ctx context.Context, snapshot []llm.Message) {
+	if m.opts.Agent == nil {
+		m.events.send(ctx, systemMsg{"No model is configured yet, so there is nothing to summarize with."})
+		return
+	}
+	if len(snapshot) == 0 {
+		m.events.send(ctx, systemMsg{"The conversation is empty — nothing to compact."})
+		return
+	}
+
+	m.events.send(ctx, systemMsg{"Compacting the conversation…"})
+
+	compacted, changed, err := session.Compact(ctx, m.opts.Agent.Provider, snapshot, session.CompactOptions{
+		// Budget 0: the user asked for this, so it happens whether or not the
+		// conversation had technically grown large enough to need it.
+		TokenBudget: 0,
+		KeepRecent:  manualKeepRecent,
+	})
+	if err != nil {
+		m.events.send(ctx, errMsg{err})
+		return
+	}
+	if !changed {
+		m.events.send(ctx, systemMsg{"Nothing to compact yet: the whole conversation is still recent."})
+		return
+	}
+
+	// Persist before adopting: if writing fails, the session on disk and the
+	// one on screen must not disagree about what was said.
+	if m.opts.Store != nil && m.opts.SessionID != "" {
+		if err := m.opts.Store.Replace(ctx, m.opts.SessionID, compacted); err != nil {
+			m.events.send(ctx, errMsg{err})
+			return
+		}
+	}
+	m.events.send(ctx, historyCompactedMsg{history: compacted, before: len(snapshot)})
+}
+
 // --- /memory ---
 
-// memoryFlow views or clears the conversation. snapshot is a copy taken at
-// the moment /memory was typed: flows run on their own goroutine and must
-// never read Model state directly once launched.
+// memoryFlow is the one entry point for everything Kiwi remembers, which is
+// two quite different things: the current conversation (large, session-scoped,
+// compacted away as it ages) and the saved notes (tiny, durable, in every
+// system prompt until deleted). Grouping them under one command matches how a
+// user thinks about it — "what do you know about me?" — while keeping the two
+// stores visibly separate, so clearing one is never mistaken for the other.
+//
+// snapshot is a copy of the conversation taken at the moment /memory was
+// typed: flows run on their own goroutine and must never read Model state
+// directly once launched.
 func (m *Model) memoryFlow(ctx context.Context, snapshot []llm.Message) {
+	store := memory.New(m.opts.WorkDir)
+
 	for {
-		title := fmt.Sprintf("Memory — %d messages", len(snapshot))
-		choice, ok := m.events.Pick(ctx, title, []pickOption{
-			{"View recent messages", "view"},
-			{"Clear memory", "clear"},
+		choice, ok := m.events.Pick(ctx, "Memory", []pickOption{
+			{fmt.Sprintf("Conversation — %d messages", len(snapshot)), "conversation"},
+			{"Saved notes about this project — " + noteCount(store, memory.Project), "project"},
+			{"Saved notes about you — " + noteCount(store, memory.Global), "global"},
 			{"Close", "close"},
 		})
 		if !ok || choice == "close" {
 			return
+		}
+
+		switch choice {
+		case "conversation":
+			if cleared := m.conversationMemoryFlow(ctx, snapshot); cleared {
+				return
+			}
+		case "project":
+			m.savedMemoryFlow(ctx, store, memory.Project)
+		case "global":
+			m.savedMemoryFlow(ctx, store, memory.Global)
+		}
+	}
+}
+
+// noteCount renders the one-line summary of a scope for the menu above.
+func noteCount(store *memory.Store, scope memory.Scope) string {
+	body, err := store.Read(scope)
+	if err != nil {
+		return "unavailable"
+	}
+	n := len(memoryLines(body))
+	switch n {
+	case 0:
+		return "empty"
+	case 1:
+		return "1 note"
+	default:
+		return fmt.Sprintf("%d notes", n)
+	}
+}
+
+func memoryLines(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) != "" {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// conversationMemoryFlow is the original /memory behaviour: inspect or drop
+// the running conversation. It reports whether it cleared history, which ends
+// the outer menu — the snapshot it was opened with is stale at that point.
+func (m *Model) conversationMemoryFlow(ctx context.Context, snapshot []llm.Message) bool {
+	for {
+		title := fmt.Sprintf("Conversation — %d messages", len(snapshot))
+		choice, ok := m.events.Pick(ctx, title, []pickOption{
+			{"View recent messages", "view"},
+			{"Clear conversation", "clear"},
+			{"Back", "back"},
+		})
+		if !ok || choice == "back" {
+			return false
 		}
 
 		switch choice {
@@ -308,10 +428,113 @@ func (m *Model) memoryFlow(ctx context.Context, snapshot []llm.Message) {
 		case "clear":
 			if m.events.Confirm(ctx, "Clear all conversation memory? This cannot be undone.") {
 				m.events.send(ctx, clearHistoryMsg{})
+				return true
 			}
-			return
 		}
 	}
+}
+
+// savedMemoryFlow manages one scope of durable notes.
+//
+// Every mutation ends in a rebuild, because the notes are folded into the
+// system prompt when the agent is assembled (see assembleAgent in cmd/kiwi) —
+// without it the user would edit their memory and watch the next answer ignore
+// the edit entirely.
+func (m *Model) savedMemoryFlow(ctx context.Context, store *memory.Store, scope memory.Scope) {
+	label := "about this project"
+	if scope == memory.Global {
+		label = "about you"
+	}
+
+	for {
+		body, err := store.Read(scope)
+		if err != nil {
+			m.events.send(ctx, errMsg{err})
+			return
+		}
+		lines := memoryLines(body)
+
+		options := []pickOption{{"View", "view"}, {"+ Add a note", "add"}}
+		if len(lines) > 0 {
+			options = append(options, pickOption{"Forget one note", "forget"}, pickOption{"Forget everything " + label, "clear"})
+		}
+		options = append(options, pickOption{"Back", "back"})
+
+		choice, ok := m.events.Pick(ctx, "Saved notes "+label+" — "+noteCount(store, scope), options)
+		if !ok || choice == "back" {
+			return
+		}
+
+		switch choice {
+		case "view":
+			path, _ := store.Path(scope)
+			if len(lines) == 0 {
+				m.events.send(ctx, systemMsg{"Nothing remembered " + label + " yet."})
+				continue
+			}
+			out := make([]string, 0, len(lines)+1)
+			for _, line := range lines {
+				out = append(out, "  "+styleDim.Render(line))
+			}
+			if path != "" {
+				out = append(out, styleDim.Render("  ("+path+")"))
+			}
+			m.events.send(ctx, printLinesMsg{lines: out})
+
+		case "add":
+			note, ok := m.events.Text(ctx, "What should Kiwi remember?", "", "")
+			if !ok || strings.TrimSpace(note) == "" {
+				continue
+			}
+			dropped, err := store.Append(scope, note)
+			if err != nil {
+				m.events.send(ctx, errMsg{err})
+				continue
+			}
+			m.events.send(ctx, systemMsg{memorySavedMessage(dropped)})
+			m.events.send(ctx, requestRebuildMsg{})
+
+		case "forget":
+			pickOptions := make([]pickOption, 0, len(lines)+1)
+			for i, line := range lines {
+				pickOptions = append(pickOptions, pickOption{line, strconv.Itoa(i)})
+			}
+			pickOptions = append(pickOptions, pickOption{"Cancel", "cancel"})
+			pick, ok := m.events.Pick(ctx, "Which note should Kiwi forget?", pickOptions)
+			if !ok || pick == "cancel" {
+				continue
+			}
+			i, err := strconv.Atoi(pick)
+			if err != nil || i < 0 || i >= len(lines) {
+				continue
+			}
+			remaining := append(append([]string{}, lines[:i]...), lines[i+1:]...)
+			if _, err := store.Write(scope, strings.Join(remaining, "\n")); err != nil {
+				m.events.send(ctx, errMsg{err})
+				continue
+			}
+			m.events.send(ctx, systemMsg{"Forgotten."})
+			m.events.send(ctx, requestRebuildMsg{})
+
+		case "clear":
+			if !m.events.Confirm(ctx, "Forget every saved note "+label+"? This cannot be undone.") {
+				continue
+			}
+			if err := store.Clear(scope); err != nil {
+				m.events.send(ctx, errMsg{err})
+				continue
+			}
+			m.events.send(ctx, systemMsg{"Forgotten everything " + label + "."})
+			m.events.send(ctx, requestRebuildMsg{})
+		}
+	}
+}
+
+func memorySavedMessage(dropped int) string {
+	if dropped > 0 {
+		return fmt.Sprintf("Saved — memory was full, so the %d oldest note(s) were dropped.", dropped)
+	}
+	return "Saved."
 }
 
 func renderHistoryLines(msgs []llm.Message) []string {

@@ -13,12 +13,19 @@ import (
 )
 
 func main() {
+	// run's deferred cleanups (including the telemetry flush) must complete
+	// before the process exits, so os.Exit is called out here rather than
+	// from inside run — os.Exit skips deferred functions.
+	os.Exit(run())
+}
+
+func run() int {
 	// Loaded before anything else so every command — the TUI, `ask`, future
 	// subcommands — sees the same environment regardless of how it builds its
 	// provider.
 	if err := config.LoadDotEnv(); err != nil {
 		fmt.Fprintln(os.Stderr, "kiwi: loading .env:", err)
-		os.Exit(1)
+		return 1
 	}
 
 	ctx := context.Background()
@@ -48,8 +55,9 @@ func main() {
 
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, "kiwi:", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // openTelemetryLog opens the file OTel export failures are written to,

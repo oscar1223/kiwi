@@ -57,7 +57,8 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
 | `/skill`     | gestiona skills                                       |
 | `/theme`     | cambia el tema de color, con vista previa en vivo      |
 | `/sessions`  | cambia entre conversaciones guardadas del proyecto     |
-| `/memory`    | ve o borra la memoria de la conversación               |
+| `/memory`    | ve o edita lo que kiwi recuerda                        |
+| `/compact`   | resume la conversación para liberar contexto           |
 | `/clear`     | olvida la conversación actual                          |
 | `/help`      | lista todos los comandos y atajos                      |
 | `/quit`      | sale de kiwi                                           |
@@ -70,8 +71,45 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
   `background_output` / `kill_shell` para procesos de larga duración.
 - `task` — lanza subagentes para investigación o trabajo en paralelo.
 - `load_skill` — carga instrucciones bajo demanda desde skills instaladas.
+- `remember` — guarda un hecho duradero en la memoria (ver más abajo). Pasa por el
+  mismo permiso que una escritura de fichero: en `plan` está bloqueado, en `ask` te
+  pregunta, en `work` se guarda solo.
 - Cualquier tool expuesta por un servidor MCP configurado se añade automáticamente,
   detrás del mismo permiso que las tools nativas.
+
+## Memoria y contexto
+
+Kiwi distingue dos cosas que se suelen confundir:
+
+- **La conversación** — grande, propia de la sesión, y se compacta sola cuando crece.
+  El umbral sale de la ventana de contexto real del modelo del perfil activo (la mitad
+  de la ventana), así que un modelo de 200k no se compacta con el mismo criterio que uno
+  de 32k. Cuando salta, los mensajes viejos se sustituyen por un resumen y los recientes
+  siguen tal cual. `/compact` fuerza esa compactación cuando quieras, sin esperar al
+  umbral. La línea de estado muestra `ctx N%` de la ventana ocupada, y cambia de color
+  al 50% y al 80%.
+- **Las notas guardadas** — un puñado de líneas que sobreviven a la sesión y viajan en
+  cada prompt. Dos ámbitos: `global` (sobre ti, en todos los proyectos) y `project`
+  (solo sobre este directorio). Las escribe el modelo con la tool `remember`, o tú desde
+  `/memory`. Cada ámbito tiene un tope de caracteres; al pasarse se caen las notas más
+  antiguas y kiwi lo dice en vez de olvidar en silencio.
+
+Las notas viven en `~/.config/kiwi/memory/` (`global.md` y `projects/<proyecto>.md`), no
+dentro del repositorio: lo que kiwi se anota para sí mismo no debería aparecer nunca en
+tu `git status`. Para instrucciones compartidas y versionadas ya está `KIWI.md`/`AGENTS.md`,
+que kiwi lee y nunca escribe.
+
+### Adjuntar ficheros con `@`
+
+En la TUI, escribir `@ruta/al/fichero` mete su contenido en el mensaje que recibe el
+modelo, sin que tenga que llamar a `read_file`:
+
+```
+› ¿por qué falla @internal/agent/agent.go en el test de @internal/agent/agent_test.go?
+```
+
+La transcripción sigue mostrando lo que escribiste tú; el contenido se añade por debajo.
+Si una ruta no existe, kiwi lo dice en vez de preguntar sobre un fichero que nunca llegó.
 
 ## Sesiones
 
@@ -129,6 +167,7 @@ Todo vive bajo `~/.config/kiwi/` (u `$XDG_CONFIG_HOME/kiwi/`):
 - `.env` — API keys y demás variables, gestionadas con `/config`.
 - `mcp.json` — servidores MCP, por stdio o remotos (HTTP/SSE).
 - `skills/` — skills en Markdown que el modelo carga bajo demanda.
+- `memory/` — notas duraderas: `global.md` y una por proyecto en `projects/`.
 
 ## Telemetría (opcional)
 

@@ -10,24 +10,49 @@ import (
 
 // CompactOptions bounds when and how much history gets condensed.
 type CompactOptions struct {
-	// CharBudget is the rough size, in characters, above which the oldest
-	// messages get summarized. Character count is a stand-in for tokens — a
-	// real tokenizer is not worth the dependency for a threshold this coarse.
-	CharBudget int
+	// TokenBudget is the estimated size, in tokens, above which the oldest
+	// messages get summarized. Estimated, not measured: see
+	// llm.EstimateMessageTokens for why a real tokenizer is not worth the
+	// dependency at this threshold's precision.
+	//
+	// A budget of 0 or less compacts unconditionally, which is what /compact
+	// asks for — the user deciding the context is cluttered outranks any
+	// arithmetic about whether it technically had to be.
+	TokenBudget int
 	// KeepRecent is how many trailing messages, at minimum, stay verbatim.
 	// The actual cut point moves forward from here to the next turn
 	// boundary; see Compact.
 	KeepRecent int
 }
 
+// historyShare is the fraction of a model's context window that stored history
+// may occupy before it gets summarized. The rest is not slack: the system
+// prompt, every tool schema, the files the next turn will read, and the
+// model's own reply all have to fit in the same window alongside it.
+const historyShare = 0.5
+
+// DefaultKeepRecent is how much of the tail stays verbatim through a
+// compaction — enough that the thread of the current task survives it.
+const DefaultKeepRecent = 20
+
+// CompactOptionsFor sizes the budget from the model actually in use, so a
+// 200k-token model is not compacted on the same schedule as a 32k one.
+func CompactOptionsFor(model string) CompactOptions {
+	return CompactOptions{
+		TokenBudget: int(float64(llm.ContextWindow(model)) * historyShare),
+		KeepRecent:  DefaultKeepRecent,
+	}
+}
+
+// DefaultCompactOptions is CompactOptionsFor with no model known.
 func DefaultCompactOptions() CompactOptions {
-	return CompactOptions{CharBudget: 24000, KeepRecent: 20}
+	return CompactOptionsFor("")
 }
 
 const summaryMarker = "(summary of earlier context in this session)"
 
 // Compact condenses the oldest part of history into a short summary once it
-// grows past opts.CharBudget, keeping the most recent messages untouched. It
+// grows past opts.TokenBudget, keeping the most recent messages untouched. It
 // reports changed=false, and returns history as given, when nothing needed to
 // happen or nothing safely could.
 //
@@ -46,7 +71,7 @@ const summaryMarker = "(summary of earlier context in this session)"
 // occasionally a few more, never fewer — by extending "recent" to cover the
 // whole straddling turn instead of discarding it.
 func Compact(ctx context.Context, provider llm.Provider, history []llm.Message, opts CompactOptions) ([]llm.Message, bool, error) {
-	if estimateChars(history) <= opts.CharBudget {
+	if opts.TokenBudget > 0 && llm.EstimateMessageTokens(history) <= opts.TokenBudget {
 		return history, false, nil
 	}
 
@@ -77,14 +102,6 @@ func Compact(ctx context.Context, provider llm.Provider, history []llm.Message, 
 	)
 	condensed = append(condensed, recent...)
 	return condensed, true, nil
-}
-
-func estimateChars(history []llm.Message) int {
-	total := 0
-	for _, m := range history {
-		total += len(m.Content)
-	}
-	return total
 }
 
 const summarizePrompt = `Summarize the conversation below between a user and the Kiwi coding agent in a

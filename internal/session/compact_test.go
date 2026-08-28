@@ -52,7 +52,7 @@ func TestCompactNeverSplitsAToolRoundTrip(t *testing.T) {
 	// KeepRecent=3 lands exactly on the tool-result message if taken
 	// literally: len(history)=6, cut=3 -> history[3] is the assistant message
 	// that owns the tool call, still mid round-trip.
-	opts := CompactOptions{CharBudget: 10, KeepRecent: 3}
+	opts := CompactOptions{TokenBudget: 1, KeepRecent: 3}
 	got, changed, err := Compact(context.Background(), fake, history, opts)
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
@@ -91,7 +91,7 @@ func TestCompactSummarizesTheOldPrefix(t *testing.T) {
 	}
 	fake := &llmtest.Fake{Steps: []llmtest.Step{{Text: "condensed summary"}}}
 
-	got, changed, err := Compact(context.Background(), fake, history, CompactOptions{CharBudget: 10, KeepRecent: 2})
+	got, changed, err := Compact(context.Background(), fake, history, CompactOptions{TokenBudget: 1, KeepRecent: 2})
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestCompactSkipsWhenNoSafeBoundaryExists(t *testing.T) {
 	}
 	fake := &llmtest.Fake{}
 
-	got, changed, err := Compact(context.Background(), fake, history, CompactOptions{CharBudget: 10, KeepRecent: 1})
+	got, changed, err := Compact(context.Background(), fake, history, CompactOptions{TokenBudget: 1, KeepRecent: 1})
 	if err != nil {
 		t.Fatalf("Compact: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestCompactPropagatesSummarizerError(t *testing.T) {
 	}
 	fake := &llmtest.Fake{Steps: []llmtest.Step{{Err: errBoom}}}
 
-	_, _, err := Compact(context.Background(), fake, history, CompactOptions{CharBudget: 10, KeepRecent: 1})
+	_, _, err := Compact(context.Background(), fake, history, CompactOptions{TokenBudget: 1, KeepRecent: 1})
 	if err == nil {
 		t.Fatal("expected the summarizer's error to propagate")
 	}

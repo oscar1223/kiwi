@@ -39,7 +39,7 @@ func Persist(ctx context.Context, store *Store, sessionID string, provider llm.P
 		return nil, fmt.Errorf("session: reloading history: %w", err)
 	}
 
-	compacted, changed, err := Compact(ctx, provider, history, DefaultCompactOptions())
+	compacted, changed, err := Compact(ctx, provider, history, CompactOptionsFor(provider.Model()))
 	if err != nil {
 		return history, nil
 	}

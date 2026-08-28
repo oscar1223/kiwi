@@ -459,6 +459,49 @@ func TestStatusLineShowsAccumulatedTokens(t *testing.T) {
 	}
 }
 
+func TestStatusLineShowsContextUsage(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.width = 120
+
+	// Roughly a tenth of the 128k-token fallback window, in characters.
+	m.history = []llm.Message{{Role: llm.RoleUser, Content: strings.Repeat("x", 4*12_800)}}
+
+	got := ansi.ReplaceAllString(m.statusLine(), "")
+	if !strings.Contains(got, "ctx 10%") {
+		t.Errorf("status line = %q, want it to report ctx 10%%", got)
+	}
+}
+
+// The indicator is about the window filling up, so an empty conversation with
+// a trivial system prompt must not clutter the line with "ctx 0%".
+func TestStatusLineOmitsContextUsageWhenEmpty(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.width = 120
+	m.history = nil
+	m.opts.Agent = nil
+
+	if strings.Contains(m.statusLine(), "ctx") {
+		t.Errorf("status line = %q, want no context indicator on an empty session", m.statusLine())
+	}
+}
+
+// The system prompt is often the larger half of the window early on — project
+// instructions, memory, skills and every tool schema live in it — so leaving
+// it out would under-report exactly when the number first starts to matter.
+func TestContextUsageCountsTheSystemPrompt(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.history = nil
+	m.opts.Agent.System = strings.Repeat("s", 4000)
+
+	used, window := m.contextUsage()
+	if used < 900 {
+		t.Errorf("contextUsage() = %d tokens, want the system prompt counted", used)
+	}
+	if window != llm.ContextWindow(m.opts.ModelLabel) {
+		t.Errorf("window = %d, want the model's own %d", window, llm.ContextWindow(m.opts.ModelLabel))
+	}
+}
+
 // The welcome banner is the whole onboarding for a user who already has a
 // provider configured — it must explain modes, show example prompts, and
 // point at "/" now that autocomplete exists to back it up.

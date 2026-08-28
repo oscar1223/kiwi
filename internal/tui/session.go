@@ -51,10 +51,16 @@ type (
 	// Command-flow messages: sent by /model, /config, /mcp, /skill, /memory
 	// running in their own goroutine (see runFlow) back to Update, the only
 	// place allowed to touch Model state.
-	systemMsg         struct{ text string }
-	errMsg            struct{ err error }
-	printLinesMsg     struct{ lines []string }
-	clearHistoryMsg   struct{}
+	systemMsg       struct{ text string }
+	errMsg          struct{ err error }
+	printLinesMsg   struct{ lines []string }
+	clearHistoryMsg struct{}
+	// historyCompactedMsg carries the result of a manual /compact: the
+	// conversation the session should carry on from, already persisted.
+	historyCompactedMsg struct {
+		history []llm.Message
+		before  int
+	}
 	requestRebuildMsg struct{}
 	agentRebuiltMsg   struct {
 		agent      *agent.Agent

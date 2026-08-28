@@ -297,6 +297,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.history = nil
 		return m, tea.Batch(tea.Println(styleDim.Render("  memory cleared")), m.events.next())
 
+	case historyCompactedMsg:
+		m.history = msg.history
+		line := sprintf("  compacted: %d messages → %d", msg.before, len(msg.history))
+		return m, tea.Batch(tea.Println(styleDim.Render(line)), m.events.next())
+
 	case sessionSwitchedMsg:
 		m.opts.SessionID = msg.sessionID
 		m.history = msg.history
@@ -460,11 +465,26 @@ func (m *Model) submit(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(base)
 	m.cancel = cancel
 
+	// The model gets the file contents; the transcript keeps what the user
+	// actually typed, so scrollback stays readable no matter how much was
+	// attached.
+	sent, attached, missing := expandFileMentions(m.opts.WorkDir, text)
+
 	history := append([]llm.Message(nil), m.history...)
-	go runTurn(ctx, m.opts.Agent, gen, text, history, m.events)
+	go runTurn(ctx, m.opts.Agent, gen, sent, history, m.events)
+
+	lines := []string{bullet(styleUser.Render(">"), styleUser.Render(text))}
+	if len(attached) > 0 {
+		lines = append(lines, styleDim.Render("  attached "+strings.Join(attached, ", ")))
+	}
+	if len(missing) > 0 {
+		// Worth saying out loud: a question about a file that was never
+		// attached looks identical to one that was, until the answer is wrong.
+		lines = append(lines, styleWarn.Render("  could not read "+strings.Join(missing, ", ")))
+	}
 
 	return tea.Batch(
-		tea.Println(bullet(styleUser.Render(">"), styleUser.Render(text))),
+		tea.Println(strings.Join(lines, "\n")),
 		m.spinner.Tick,
 	)
 }
@@ -778,6 +798,10 @@ func (m *Model) statusLine() string {
 	if total := m.sessionUsage.InputTokens + m.sessionUsage.OutputTokens; total > 0 {
 		parts = append(parts, styleDim.Render(formatTokenCount(total)+" tok"))
 	}
+	if used, window := m.contextUsage(); window > 0 && used > 0 {
+		parts = append(parts, m.contextStyle(used, window).Render(
+			sprintf("ctx %d%%", percentOf(used, window))))
+	}
 	line := strings.Join(parts, styleDim.Render(" · "))
 	hint := styleDim.Render("shift+tab: mode")
 	gap := m.width - lipgloss.Width(line) - lipgloss.Width(hint)
@@ -795,6 +819,45 @@ func formatTokenCount(n int) string {
 		return sprintf("%d", n)
 	}
 	return sprintf("%.1fk", float64(n)/1000)
+}
+
+// contextUsage estimates how much of the model's context window the next
+// request will occupy: the stored conversation plus the system prompt, which
+// carries the project instructions, memory, skills and every tool schema and
+// is often the larger half early in a session.
+//
+// It is an estimate (see llm.EstimateMessageTokens) rather than the provider's
+// own count, because the number is wanted *before* the next request is sent —
+// the point is to warn while there is still room to act on the warning.
+func (m *Model) contextUsage() (used, window int) {
+	window = llm.ContextWindow(m.opts.ModelLabel)
+	used = llm.EstimateMessageTokens(m.history)
+	if m.opts.Agent != nil {
+		used += llm.EstimateTokens(m.opts.Agent.System)
+	}
+	return used, window
+}
+
+// contextStyle escalates as the window fills. The thresholds sit either side
+// of the automatic compaction point: by the time history alone is half the
+// window, the next persisted turn will summarize it, and the user is better
+// off knowing that is about to happen than discovering it afterwards.
+func (m *Model) contextStyle(used, window int) lipgloss.Style {
+	switch pct := percentOf(used, window); {
+	case pct >= 80:
+		return styleWarn
+	case pct >= 50:
+		return styleKiwi
+	default:
+		return styleDim
+	}
+}
+
+func percentOf(part, whole int) int {
+	if whole <= 0 {
+		return 0
+	}
+	return part * 100 / whole
 }
 
 func elapsed(since time.Time) string {
@@ -917,7 +980,8 @@ var commandRegistry = []commandSpec{
 	{"/skill", "manage skills"},
 	{"/theme", "switch the colour theme"},
 	{"/sessions", "switch between saved conversations"},
-	{"/memory", "view or clear conversation memory"},
+	{"/memory", "view or edit what kiwi remembers"},
+	{"/compact", "summarize the conversation to free up context"},
 	{"/clear", "forget the conversation"},
 	{"/help", "show this list"},
 	{"/quit", "exit kiwi"},
@@ -999,6 +1063,10 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 		return m.runFlow(m.themeFlow), true
 	case "/sessions":
 		return m.runFlow(m.sessionsFlow), true
+	case "/compact":
+		snapshot := append([]llm.Message(nil), m.history...)
+		return m.runFlow(func(ctx context.Context) { m.compactFlow(ctx, snapshot) }), true
+
 	case "/memory":
 		snapshot := append([]llm.Message(nil), m.history...)
 		return m.runFlow(func(ctx context.Context) { m.memoryFlow(ctx, snapshot) }), true
