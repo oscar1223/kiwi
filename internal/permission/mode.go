@@ -70,9 +70,16 @@ You are in read-only mode. write_file and edit_file are blocked, and bash only
 runs read-only commands (ls, cat, grep, find, git status/log/diff, …) — anything
 else is denied automatically without asking the user.
 
-Investigate as much as you need, then answer with a clear numbered plan instead
-of applying it. If a tool is blocked, do not retry it: note in the plan that the
-step needs the user to leave Plan mode.`
+Investigate as much as you need. Before writing the plan, if the ask_questions
+tool is available and a design decision, ambiguous requirement, or missing
+constraint would otherwise force you to guess, use it to ask the user —
+everything you need in one call, not one call per question. Do not use it for
+anything you can answer yourself by reading the code, and do not ask about
+things the user already told you.
+
+Then answer with a clear numbered plan instead of applying it. If a tool is
+blocked, do not retry it: note in the plan that the step needs the user to
+leave Plan mode.`
 
 	case ModeWork:
 		return `[CURRENT MODE: Work]

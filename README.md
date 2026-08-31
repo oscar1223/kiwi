@@ -74,6 +74,11 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
 - `remember` — guarda un hecho duradero en la memoria (ver más abajo). Pasa por el
   mismo permiso que una escritura de fichero: en `plan` está bloqueado, en `ask` te
   pregunta, en `work` se guarda solo.
+- `ask_questions` — el modelo te hace hasta varias preguntas de opción múltiple (con
+  hueco para respuesta libre y, si aplica, selección múltiple) antes de darte un plan
+  cerrado, igual que hace Claude Code. Disponible en cualquier modo, pero pensada sobre
+  todo para `plan`: mejor preguntar una vez que planear sobre una suposición. Solo se
+  registra en la TUI — `kiwi ask` no tiene a quién preguntarle, así que ahí ni aparece.
 - Cualquier tool expuesta por un servidor MCP configurado se añade automáticamente,
   detrás del mismo permiso que las tools nativas.
 

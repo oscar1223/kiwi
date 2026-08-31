@@ -99,6 +99,10 @@ type Model struct {
 	// with pending: only one modal is ever on screen.
 	activePick *pickState
 	activeText *textState
+	// activeQuestion holds an open ask_questions prompt from the model
+	// itself (see internal/tools.AskQuestionsTool). Mutually exclusive with
+	// the above for the same reason.
+	activeQuestion *questionState
 	// flowBusy is true while a /model, /config, /mcp, /skill or /memory flow
 	// is running in its own goroutine. Gates chat submission and starting a
 	// second flow the same way busy gates them for a running turn.
@@ -280,6 +284,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeText = &textState{req: msg, input: ti}
 		return m, m.events.next()
 
+	case *questionRequest:
+		m.activeQuestion = &questionState{req: msg}
+		return m, m.events.next()
+
 	case systemMsg:
 		return m, tea.Batch(tea.Println(bullet(styleDim.Render("·"), styleDim.Render(msg.text))), m.events.next())
 
@@ -352,6 +360,9 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.activeText != nil {
 		return m, m.onTextKey(msg, key)
+	}
+	if m.activeQuestion != nil {
+		return m, m.onQuestionKey(msg, key)
 	}
 
 	// Slash-command autocomplete: while the input is "/" plus an unfinished
@@ -582,6 +593,90 @@ func (m *Model) onTextKey(msg tea.KeyPressMsg, key string) tea.Cmd {
 	return cmd
 }
 
+// onQuestionKey drives an open ask_questions prompt. Single-select: arrows
+// move the highlight, enter resolves with that option (or, on the trailing
+// "Other" row, opens a text field first). Multi-select: space toggles the
+// highlighted option — including "Other", which opens the text field the
+// same way — and enter confirms whatever is toggled; enter with nothing
+// toggled falls back to the highlighted row, so a multi-select question
+// still answers in one keystroke when the user only wants one thing.
+func (m *Model) onQuestionKey(msg tea.KeyPressMsg, key string) tea.Cmd {
+	qs := m.activeQuestion
+
+	if qs.otherActive {
+		switch key {
+		case "enter":
+			text := strings.TrimSpace(qs.otherInput.Value())
+			qs.otherActive = false
+			if text == "" {
+				return nil
+			}
+			qs.otherText = text
+			if qs.req.q.MultiSelect {
+				qs.setSelected(qs.otherIndex(), true)
+				return nil
+			}
+			return m.resolveQuestion([]string{text})
+		case "esc", "ctrl+c":
+			qs.otherActive = false
+			return nil
+		}
+		var cmd tea.Cmd
+		qs.otherInput, cmd = qs.otherInput.Update(msg)
+		return cmd
+	}
+
+	switch key {
+	case "up", "k":
+		qs.up()
+		return nil
+	case "down", "j":
+		qs.down()
+		return nil
+	case "esc", "ctrl+c":
+		m.activeQuestion = nil
+		qs.req.resp <- questionResult{ok: false}
+		return tea.Println(styleDim.Render("  cancelled"))
+	case "space":
+		if !qs.req.q.MultiSelect {
+			return nil
+		}
+		if qs.index == qs.otherIndex() {
+			qs.openOtherInput(m.width)
+			return nil
+		}
+		qs.setSelected(qs.index, !qs.selected[qs.index])
+		return nil
+	case "enter":
+		if qs.index == qs.otherIndex() && (!qs.req.q.MultiSelect || !qs.selected[qs.otherIndex()]) {
+			qs.openOtherInput(m.width)
+			return nil
+		}
+		if qs.req.q.MultiSelect {
+			values := qs.selectedLabels()
+			if qs.selected[qs.otherIndex()] {
+				values = append(values, qs.otherText)
+			}
+			if len(values) == 0 {
+				values = []string{qs.req.q.Options[qs.index].Label}
+			}
+			return m.resolveQuestion(values)
+		}
+		return m.resolveQuestion([]string{qs.req.q.Options[qs.index].Label})
+	}
+	return nil
+}
+
+// resolveQuestion closes the current ask_questions prompt with the given
+// values, printing the same one-line record a pick or text answer leaves.
+func (m *Model) resolveQuestion(values []string) tea.Cmd {
+	qs := m.activeQuestion
+	m.activeQuestion = nil
+	qs.req.resp <- questionResult{values: values, ok: true}
+	line := qs.req.q.Question + ": " + strings.Join(values, ", ")
+	return tea.Println(bullet(styleDim.Render("·"), styleDim.Render(line)))
+}
+
 func (m *Model) cancelTurn() tea.Cmd {
 	if m.cancel != nil {
 		m.cancel()
@@ -694,6 +789,9 @@ func (m *Model) View() tea.View {
 	case m.activeText != nil:
 		b.WriteString(renderTextPrompt(m.activeText))
 		b.WriteString("\n")
+	case m.activeQuestion != nil:
+		b.WriteString(renderQuestion(m.activeQuestion))
+		b.WriteString("\n")
 	default:
 		if m.tail != "" {
 			b.WriteString("  " + styleKiwi.Render(m.tail) + "\n")
@@ -708,7 +806,7 @@ func (m *Model) View() tea.View {
 	b.WriteString(m.statusLine())
 	b.WriteString("\n")
 
-	blocked := m.pending != nil || m.activePick != nil || m.activeText != nil
+	blocked := m.pending != nil || m.activePick != nil || m.activeText != nil || m.activeQuestion != nil
 	if !blocked {
 		b.WriteString(stylePrompt.Render("› "))
 		b.WriteString(m.input.View())
@@ -723,6 +821,8 @@ func (m *Model) View() tea.View {
 	switch {
 	case m.activeText != nil:
 		v.Cursor = m.activeText.input.Cursor()
+	case m.activeQuestion != nil && m.activeQuestion.otherActive:
+		v.Cursor = m.activeQuestion.otherInput.Cursor()
 	case !blocked:
 		v.Cursor = m.input.Cursor()
 	}
@@ -754,6 +854,61 @@ func renderTextPrompt(t *textState) string {
 	b.WriteString("\n  ")
 	b.WriteString(t.input.View())
 	return b.String()
+}
+
+// renderQuestion draws one ask_questions prompt: an arrow-navigable list
+// like renderPick, plus checkboxes when the question is multi-select and a
+// trailing "Other" row that switches to free-text entry.
+func renderQuestion(qs *questionState) string {
+	q := qs.req.q
+	var b strings.Builder
+	b.WriteString(styleWarn.Render("  " + q.Question))
+	if q.MultiSelect {
+		b.WriteString(styleDim.Render("  (↑↓ space toggles · enter confirms · esc cancels)"))
+	} else {
+		b.WriteString(styleDim.Render("  (↑↓ enter · esc cancels)"))
+	}
+	b.WriteString("\n")
+
+	if qs.otherActive {
+		b.WriteString(styleDim.Render("    type your own answer"))
+		b.WriteString("\n  ")
+		b.WriteString(qs.otherInput.View())
+		return b.String()
+	}
+
+	for i, opt := range q.Options {
+		line := opt.Label
+		if opt.Description != "" {
+			line += " — " + opt.Description
+		}
+		b.WriteString(renderQuestionRow(checkbox(q.MultiSelect, qs.selected[i])+line, i == qs.index))
+	}
+
+	other := "Other (type your own)"
+	if qs.otherText != "" {
+		other += ": " + qs.otherText
+	}
+	b.WriteString(renderQuestionRow(checkbox(q.MultiSelect, qs.selected[qs.otherIndex()])+other, qs.index == qs.otherIndex()))
+	return b.String()
+}
+
+func checkbox(multiSelect, checked bool) string {
+	switch {
+	case !multiSelect:
+		return ""
+	case checked:
+		return "[x] "
+	default:
+		return "[ ] "
+	}
+}
+
+func renderQuestionRow(line string, highlighted bool) string {
+	if highlighted {
+		return styleKiwi.Render("  ▸ "+line) + "\n"
+	}
+	return styleDim.Render("    "+line) + "\n"
 }
 
 // maxSlashSuggestions caps how many rows the "/" autocomplete shows at once,
@@ -1023,7 +1178,7 @@ func isKnownCommand(text string) bool {
 // nil when it does not apply — not focused on a "/"-prefixed command, or
 // another modal already owns the keyboard.
 func (m *Model) slashSuggestions() []commandSpec {
-	if m.pending != nil || m.activePick != nil || m.activeText != nil {
+	if m.pending != nil || m.activePick != nil || m.activeText != nil || m.activeQuestion != nil {
 		return nil
 	}
 	v := m.input.Value()

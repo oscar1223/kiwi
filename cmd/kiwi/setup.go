@@ -40,6 +40,13 @@ type runSession struct {
 	// process started before a /model switch must keep running after it,
 	// unlike the MCP manager, which does need to reconnect.
 	procs *proc.Registry
+	// asker, when non-nil, registers ask_questions with the agent — see
+	// assembleAgent. It is the session's decider re-typed as tools.Asker,
+	// present only when something can actually show the model's questions
+	// to a human (the TUI); `kiwi ask` and other headless deciders leave it
+	// nil, which drops ask_questions from the toolset entirely rather than
+	// having every call fail at run time.
+	asker tools.Asker
 
 	// needsOnboarding is true when no profile's API key is set — the exact
 	// shape of a brand-new install. agent is nil in that case; the TUI runs
@@ -90,6 +97,7 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 
 	broker := permission.NewBroker(mode, decider)
 	procs := proc.NewRegistry()
+	asker, _ := decider.(tools.Asker)
 
 	provider, err := config.BuildProvider(ctx, name, profile)
 	if err != nil {
@@ -109,11 +117,12 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 			meta:            meta,
 			history:         history,
 			procs:           procs,
+			asker:           asker,
 			needsOnboarding: true,
 		}, nil
 	}
 
-	a, promptOpts, mgr := assembleAgent(ctx, provider, cwd, mode, broker, procs)
+	a, promptOpts, mgr := assembleAgent(ctx, provider, cwd, mode, broker, procs, asker)
 
 	return &runSession{
 		agent:      a,
@@ -126,6 +135,7 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 		history:    history,
 		mcpManager: mgr,
 		procs:      procs,
+		asker:      asker,
 	}, nil
 }
 
@@ -139,7 +149,7 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 // stderr rather than failing the whole build — this mirrors Connect's own
 // per-server error isolation: one broken server should not stop Kiwi from
 // starting.
-func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode permission.Mode, broker *permission.Broker, procs *proc.Registry) (*agent.Agent, prompt.Options, *mcp.Manager) {
+func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode permission.Mode, broker *permission.Broker, procs *proc.Registry, asker tools.Asker) (*agent.Agent, prompt.Options, *mcp.Manager) {
 	projectFile, projectInstructions := config.ProjectInstructions(cwd)
 
 	loadedSkills, err := skills.Load()
@@ -208,6 +218,15 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 	// pays for. Only the agent the user is actually talking to remembers.
 	fullTools.Register(tools.Remember{Store: mem, Perms: broker})
 
+	// Only registered when something can actually show questions to a human
+	// — asker is nil for `kiwi ask` and other headless runs. Kept out of
+	// generalTools/exploreTools like Remember above: a subagent's context is
+	// thrown away when it returns, so blocking on a question only the user
+	// (not whoever is waiting on the subagent) can see would be confusing.
+	if asker != nil {
+		fullTools.Register(tools.AskQuestionsTool{Asker: asker})
+	}
+
 	fullTools.Register(agent.TaskTool{
 		Provider:     provider,
 		System:       prompt.Build(subagentPromptOpts),
@@ -246,7 +265,7 @@ func (s *runSession) rebuildAgent(ctx context.Context) (*agent.Agent, string, er
 		return nil, "", err
 	}
 
-	a, _, mgr := assembleAgent(ctx, provider, s.workDir, s.broker.Mode(), s.broker, s.procs)
+	a, _, mgr := assembleAgent(ctx, provider, s.workDir, s.broker.Mode(), s.broker, s.procs, s.asker)
 
 	if s.mcpManager != nil {
 		s.mcpManager.Close()

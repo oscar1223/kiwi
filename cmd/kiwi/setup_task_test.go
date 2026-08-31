@@ -22,7 +22,7 @@ func TestAssembleAgentTaskToolNeverLeaksIntoGeneralTools(t *testing.T) {
 	procs := proc.NewRegistry()
 	t.Cleanup(procs.KillAll)
 
-	a, _, mgr := assembleAgent(context.Background(), fake, t.TempDir(), permission.ModeWork, broker, procs)
+	a, _, mgr := assembleAgent(context.Background(), fake, t.TempDir(), permission.ModeWork, broker, procs, nil)
 	if mgr != nil {
 		t.Cleanup(mgr.Close)
 	}
@@ -69,7 +69,7 @@ func TestAssembleAgentExploreToolsAreReadOnly(t *testing.T) {
 	procs := proc.NewRegistry()
 	t.Cleanup(procs.KillAll)
 
-	a, _, mgr := assembleAgent(context.Background(), fake, t.TempDir(), permission.ModeWork, broker, procs)
+	a, _, mgr := assembleAgent(context.Background(), fake, t.TempDir(), permission.ModeWork, broker, procs, nil)
 	if mgr != nil {
 		t.Cleanup(mgr.Close)
 	}

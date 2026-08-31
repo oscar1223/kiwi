@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"charm.land/bubbles/v2/textinput"
+	"github.com/oscar1223/kiwi/internal/tools"
 )
 
 // pickOption is one choice in a picker.
@@ -136,6 +137,48 @@ func (e *Events) Confirm(ctx context.Context, title string) bool {
 	return ok && v == "yes"
 }
 
+// questionRequest is a tea.Msg asking Update to show one clarifying question
+// — the model's ask_questions tool, driven through AskQuestions below — with
+// single- or multi-select options plus a free-text "Other", and report back
+// the chosen values.
+type questionRequest struct {
+	q    tools.Question
+	resp chan questionResult
+}
+
+type questionResult struct {
+	values []string
+	ok     bool
+}
+
+// AskQuestions drives the model's ask_questions tool: it shows the questions
+// one after another and blocks the calling goroutine (the tool's Run) until
+// they are all answered or one is cancelled. It implements tools.Asker.
+//
+// Cancelling any question — esc — abandons the whole batch: a partial answer
+// set is not something the model asked for and is not worth guessing at.
+func (e *Events) AskQuestions(ctx context.Context, qs []tools.Question) ([]tools.Answer, bool) {
+	answers := make([]tools.Answer, 0, len(qs))
+	for _, q := range qs {
+		req := &questionRequest{q: q, resp: make(chan questionResult, 1)}
+		select {
+		case e.ch <- req:
+		case <-ctx.Done():
+			return nil, false
+		}
+		select {
+		case r := <-req.resp:
+			if !r.ok {
+				return nil, false
+			}
+			answers = append(answers, tools.Answer{Question: q.Question, Values: r.values})
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+	return answers, true
+}
+
 // pickState is the live, re-rendered state of an open picker.
 type pickState struct {
 	req   *pickRequest
@@ -162,4 +205,70 @@ func (p *pickState) selected() pickOption {
 type textState struct {
 	req   *textRequest
 	input textinput.Model
+}
+
+// questionState is the live, re-rendered state of an open ask_questions
+// prompt for one question. Rows are the question's options plus one
+// synthetic trailing "Other" row at index otherIndex(), which opens
+// otherInput instead of resolving directly.
+type questionState struct {
+	req   *questionRequest
+	index int
+
+	// selected holds toggled rows for a multi-select question, keyed by row
+	// index (otherIndex() included). Unused for single-select, which
+	// resolves as soon as a row is chosen.
+	selected map[int]bool
+
+	// otherActive is true while the free-text "Other" answer is being typed.
+	// otherText holds the last value submitted through it.
+	otherActive bool
+	otherText   string
+	otherInput  textinput.Model
+}
+
+func (q *questionState) otherIndex() int { return len(q.req.q.Options) }
+
+func (q *questionState) up() {
+	if q.index > 0 {
+		q.index--
+	}
+}
+
+func (q *questionState) down() {
+	if q.index < q.otherIndex() {
+		q.index++
+	}
+}
+
+func (q *questionState) setSelected(i int, v bool) {
+	if q.selected == nil {
+		q.selected = map[int]bool{}
+	}
+	q.selected[i] = v
+}
+
+// selectedLabels returns the labels of toggled options, in option order. It
+// never includes the synthetic "Other" row — callers add otherText for that
+// themselves, since it has no Label.
+func (q *questionState) selectedLabels() []string {
+	labels := make([]string, 0, len(q.selected))
+	for i, opt := range q.req.q.Options {
+		if q.selected[i] {
+			labels = append(labels, opt.Label)
+		}
+	}
+	return labels
+}
+
+// openOtherInput switches the prompt into free-text mode, prefilled with
+// whatever "Other" text was last submitted (empty the first time).
+func (q *questionState) openOtherInput(width int) {
+	ti := textinput.New()
+	ti.Placeholder = "type your own answer"
+	ti.SetValue(q.otherText)
+	ti.Focus()
+	ti.SetWidth(max(20, width-4))
+	q.otherInput = ti
+	q.otherActive = true
 }

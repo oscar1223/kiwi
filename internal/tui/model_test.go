@@ -53,6 +53,8 @@ func key(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "tab":
 		return tea.KeyPressMsg{Code: tea.KeyTab}
+	case "space":
+		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	default:
 		r := []rune(name)
 		if len(r) != 1 {
@@ -65,7 +67,7 @@ func key(name string) tea.KeyPressMsg {
 // TestKeyHelperMatchesRealEncoding guards the helper itself: if these stop
 // matching, every key test below would be asserting against a fiction.
 func TestKeyHelperMatchesRealEncoding(t *testing.T) {
-	for _, name := range []string{"esc", "enter", "shift+tab", "ctrl+c", "ctrl+d", "up", "down", "tab", "y", "n", "a"} {
+	for _, name := range []string{"esc", "enter", "shift+tab", "ctrl+c", "ctrl+d", "up", "down", "tab", "space", "y", "n", "a"} {
 		if got := key(name).String(); got != name {
 			t.Errorf("key(%q).String() = %q", name, got)
 		}

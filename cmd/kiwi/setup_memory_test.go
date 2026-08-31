@@ -20,7 +20,7 @@ func assembleForTest(t *testing.T, workDir string) *agent.Agent {
 	procs := proc.NewRegistry()
 	t.Cleanup(procs.KillAll)
 
-	a, _, mgr := assembleAgent(context.Background(), fake, workDir, permission.ModeWork, broker, procs)
+	a, _, mgr := assembleAgent(context.Background(), fake, workDir, permission.ModeWork, broker, procs, nil)
 	if mgr != nil {
 		t.Cleanup(mgr.Close)
 	}
