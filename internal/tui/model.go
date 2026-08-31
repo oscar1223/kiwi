@@ -184,6 +184,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.onKey(msg)
 
+	case tea.PasteMsg:
+		return m, m.onPaste(msg)
+
 	case spinner.TickMsg:
 		if !m.busy {
 			return m, nil
@@ -564,6 +567,26 @@ func (m *Model) onPickKey(key string) tea.Cmd {
 		return tea.Println(styleDim.Render("  cancelled"))
 	}
 	return nil
+}
+
+// onPaste routes a bracketed-paste event to whichever text field is actually
+// on screen. Bubbletea delivers paste as its own tea.PasteMsg rather than a
+// tea.KeyPressMsg, so without this it always fell through to Update's default
+// case and landed in m.input — the bottom chat box — even while a text prompt
+// like the MCP "Environment variables" field was open and visibly focused.
+func (m *Model) onPaste(msg tea.PasteMsg) tea.Cmd {
+	var cmd tea.Cmd
+	switch {
+	case m.activeText != nil:
+		m.activeText.input, cmd = m.activeText.input.Update(msg)
+	case m.activeQuestion != nil && m.activeQuestion.otherActive:
+		m.activeQuestion.otherInput, cmd = m.activeQuestion.otherInput.Update(msg)
+	case m.activePick != nil || m.pending != nil:
+		// Neither has anywhere to put pasted text.
+	default:
+		m.input, cmd = m.input.Update(msg)
+	}
+	return cmd
 }
 
 // onTextKey drives an open text prompt: everything but enter/esc is handed to
