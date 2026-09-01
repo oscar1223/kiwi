@@ -84,7 +84,9 @@ leave Plan mode.`
 	case ModeWork:
 		return `[CURRENT MODE: Work]
 write_file and edit_file apply without asking the user, so be deliberate about
-what you write. bash and MCP tools still ask for confirmation.`
+what you write. bash commands also run without asking, unless they match a
+dangerous pattern (rm -rf, sudo, force push, etc.), which still confirms. MCP
+tools still ask for confirmation.`
 
 	default:
 		return ""
@@ -134,7 +136,13 @@ func Resolve(mode Mode, a Action) (allow, decided bool) {
 		return false, false
 
 	case ModeWork:
-		if a.Name == ActionWrite || a.Name == ActionEdit {
+		switch {
+		case a.Name == ActionWrite, a.Name == ActionEdit:
+			return true, true
+		case a.Name == ActionBash:
+			if IsDangerous(a.Detail) {
+				return false, false
+			}
 			return true, true
 		}
 		return false, false

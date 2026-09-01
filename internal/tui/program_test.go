@@ -207,9 +207,9 @@ func TestProgramAsksBeforeRunningACommand(t *testing.T) {
 	out := runProgram(t, []llmtest.Step{
 		probeStep,
 		{Chunks: []string{"Done.\n"}},
-	}, permission.ModeWork, "run it\r")
+	}, permission.ModeAsk, "run it\r")
 
-	// Work mode auto-approves edits but still asks for commands.
+	// Ask mode confirms every command.
 	if !strings.Contains(out, "bash") {
 		t.Errorf("the tool call was not shown:\n%s", out)
 	}
@@ -228,7 +228,7 @@ func TestProgramApprovesAndRunsTheTool(t *testing.T) {
 	out := runProgram(t, []llmtest.Step{
 		probeStep,
 		{Chunks: []string{"Done.\n"}},
-	}, permission.ModeWork, "run it\r", "y")
+	}, permission.ModeAsk, "run it\r", "y")
 
 	if !strings.Contains(out, toolProbe) {
 		t.Errorf("the approved command did not run:\n%s", out)
@@ -244,13 +244,48 @@ func TestProgramDenialReleasesTheTurn(t *testing.T) {
 	out := runProgram(t, []llmtest.Step{
 		probeStep,
 		{Chunks: []string{"Understood.\n"}},
-	}, permission.ModeWork, "run it\r", "n")
+	}, permission.ModeAsk, "run it\r", "n")
 
 	if strings.Contains(out, toolProbe) {
 		t.Errorf("the denied command ran anyway:\n%s", out)
 	}
 	if !strings.Contains(out, "Understood.") {
 		t.Errorf("the turn did not resume after the denial:\n%s", out)
+	}
+}
+
+// Work mode auto-approves safe commands, same as edits.
+func TestProgramWorkModeRunsSafeCommandWithoutAsking(t *testing.T) {
+	out := runProgram(t, []llmtest.Step{
+		probeStep,
+		{Chunks: []string{"Done.\n"}},
+	}, permission.ModeWork, "run it\r")
+
+	if !strings.Contains(out, toolProbe) {
+		t.Errorf("the safe command did not run without approval:\n%s", out)
+	}
+	if !strings.Contains(out, "Done.") {
+		t.Errorf("the turn did not continue after the tool:\n%s", out)
+	}
+	if strings.Contains(out, "? printf") {
+		t.Errorf("work mode should not confirm a safe command:\n%s", out)
+	}
+}
+
+// Dangerous commands still confirm even in Work mode.
+func TestProgramWorkModeStillAsksForDangerousCommands(t *testing.T) {
+	out := runProgram(t, []llmtest.Step{
+		{ToolCalls: []llm.ToolCall{
+			llmtest.Call("c1", "bash", map[string]any{"command": "rm -rf /tmp/probe"}),
+		}},
+		{Chunks: []string{"Done.\n"}},
+	}, permission.ModeWork, "run it\r")
+
+	if !strings.Contains(out, "rm -rf /tmp/probe") || !strings.Contains(out, "?") {
+		t.Errorf("no confirmation was requested for a dangerous command:\n%s", out)
+	}
+	if strings.Contains(out, "Done.") {
+		t.Errorf("the turn continued while a dangerous command was still blocked:\n%s", out)
 	}
 }
 

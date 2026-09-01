@@ -1105,7 +1105,7 @@ func modeHint(mode permission.Mode) string {
 	case permission.ModePlan:
 		return "read-only; edits blocked"
 	case permission.ModeWork:
-		return "edits apply without asking"
+		return "edits and safe commands apply without asking"
 	default:
 		return "every action is confirmed"
 	}

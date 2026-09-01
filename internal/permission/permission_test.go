@@ -23,10 +23,12 @@ func TestResolvePolicyTable(t *testing.T) {
 		{ModePlan, Action{Name: ActionBash, Detail: "rm -rf /"}, false, true, "plan blocks mutations"},
 		{ModePlan, Action{Name: ActionRead}, false, false, "reads are not policy decisions"},
 
-		// Work mode auto-applies edits but still asks for commands.
+		// Work mode auto-applies edits and safe commands, but still asks for
+		// dangerous ones and for opaque MCP tools.
 		{ModeWork, Action{Name: ActionWrite}, true, true, "work auto-approves writes"},
 		{ModeWork, Action{Name: ActionEdit}, true, true, "work auto-approves edits"},
-		{ModeWork, Action{Name: ActionBash, Detail: "npm test"}, false, false, "work still asks for commands"},
+		{ModeWork, Action{Name: ActionBash, Detail: "npm test"}, true, true, "work auto-approves safe commands"},
+		{ModeWork, Action{Name: ActionBash, Detail: "rm -rf /"}, false, false, "work still asks for dangerous commands"},
 		{ModeWork, Action{Name: "mcp:x/y"}, false, false, "work still asks for MCP"},
 
 		// Ask mode never decides on its own.

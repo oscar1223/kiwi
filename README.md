@@ -38,7 +38,7 @@ confirmación:
 |--------|-----------------------------------------------|
 | `ask`  | confirma cada acción antes de ejecutarla (por defecto) |
 | `plan` | solo lectura — no puede editar ni ejecutar comandos |
-| `work` | aplica ediciones automáticamente, pero sigue preguntando antes de comandos |
+| `work` | aplica ediciones y comandos automáticamente; solo pregunta ante comandos peligrosos (rm -rf, sudo, force push, ...) o herramientas MCP |
 
 Se eligen con `--mode` al arrancar, se cambian en caliente con `/ask` `/plan` `/work`, o
 ciclando con `shift+tab`.
