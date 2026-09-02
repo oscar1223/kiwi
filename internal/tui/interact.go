@@ -45,7 +45,7 @@ type textRequest struct {
 	placeholder string
 	defaultVal  string
 	// secret masks input as it is typed (API keys, tokens) and masks the
-	// value in the one-line record printed to scrollback once answered —
+	// value in the one-line record filed in the transcript once answered —
 	// masking only the live typing and then echoing the real value back
 	// would defeat the point.
 	secret bool
@@ -265,6 +265,7 @@ func (q *questionState) selectedLabels() []string {
 // whatever "Other" text was last submitted (empty the first time).
 func (q *questionState) openOtherInput(width int) {
 	ti := textinput.New()
+	ti.SetVirtualCursor(false)
 	ti.Placeholder = "type your own answer"
 	ti.SetValue(q.otherText)
 	ti.Focus()

@@ -91,15 +91,17 @@ func TestStreamFlushesCompleteLinesOnly(t *testing.T) {
 	m, _ := newTestModel(t, permission.ModeAsk)
 	m.busy = true
 
-	if cmd := m.stream("hello"); cmd != nil {
-		t.Error("a partial line should not be printed yet")
+	m.stream("hello")
+	if got := len(m.transcript.entries); got != 0 {
+		t.Errorf("a partial line was filed already: %d entries", got)
 	}
 	if m.tail != "hello" {
 		t.Errorf("tail = %q, want %q", m.tail, "hello")
 	}
 
-	if cmd := m.stream(" world\nsecond"); cmd == nil {
-		t.Error("completing a line should produce a print command")
+	m.stream(" world\nsecond")
+	if got := len(m.transcript.entries); got != 1 {
+		t.Errorf("completing a line filed %d entries, want 1", got)
 	}
 	if m.tail != "second" {
 		t.Errorf("tail = %q, want the remainder %q", m.tail, "second")
@@ -110,20 +112,25 @@ func TestStreamFlushesCompleteLinesOnly(t *testing.T) {
 	if m.tail != "" {
 		t.Errorf("tail = %q, want empty", m.tail)
 	}
+	if got := len(m.transcript.entries); got != 3 {
+		t.Errorf("filed %d lines in total, want 3", got)
+	}
 }
 
 func TestFlushTailEmitsThePartialLine(t *testing.T) {
 	m, _ := newTestModel(t, permission.ModeAsk)
 	m.tail = "trailing"
 
-	if cmd := m.flushTail(); cmd == nil {
-		t.Fatal("a non-empty tail must be flushed at the end of a turn")
+	m.flushTail()
+	if got := len(m.transcript.entries); got != 1 {
+		t.Fatalf("a non-empty tail must be flushed at the end of a turn: %d entries", got)
 	}
 	if m.tail != "" {
 		t.Errorf("tail = %q after flush", m.tail)
 	}
-	if cmd := m.flushTail(); cmd != nil {
-		t.Error("flushing an empty tail should be a no-op")
+	m.flushTail()
+	if got := len(m.transcript.entries); got != 1 {
+		t.Errorf("flushing an empty tail was not a no-op: %d entries", got)
 	}
 }
 
@@ -320,30 +327,53 @@ func TestNonCommandTextIsNotIntercepted(t *testing.T) {
 
 func TestUnknownCommandIsReported(t *testing.T) {
 	m, _ := newTestModel(t, permission.ModeAsk)
-	cmd, handled := m.command("/nope")
-	if !handled || cmd == nil {
-		t.Error("an unknown slash command should be reported, not sent to the model")
+	_, handled := m.command("/nope")
+	if !handled {
+		t.Fatal("an unknown slash command was sent to the model")
+	}
+	if got := plain(strings.Join(m.transcript.render(80), "\n")); !strings.Contains(got, "/nope") {
+		t.Errorf("the unknown command was not reported: %q", got)
 	}
 }
 
-func TestRenderLineTracksCodeFences(t *testing.T) {
+func TestRecordTracksCodeFences(t *testing.T) {
 	m, _ := newTestModel(t, permission.ModeAsk)
 
-	m.renderLine("prose")
+	m.record("prose")
 	if m.inFence {
 		t.Error("plain prose opened a fence")
 	}
-	m.renderLine("```go")
+	m.record("```go")
 	if !m.inFence {
 		t.Error("a fence was not opened")
 	}
-	m.renderLine("func main() {}")
+	m.record("func main() {}")
 	if !m.inFence {
 		t.Error("the fence closed early")
 	}
-	m.renderLine("```")
+	m.record("```")
 	if m.inFence {
 		t.Error("the fence was not closed")
+	}
+}
+
+// The fence is resolved once, when the line is recorded. Rendering must not
+// walk it again, however many times the window is resized.
+func TestRecordedFencesSurviveRerendering(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	for _, line := range []string{"prose", "```go", "func main() {}", "```", "more prose"} {
+		m.record(line)
+	}
+
+	want := append([]string(nil), m.transcript.render(80)...)
+	m.transcript.render(40)
+	got := m.transcript.render(80)
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d changed when the transcript was rerendered:\n %q\n %q",
+				i, plain(want[i]), plain(got[i]))
+		}
 	}
 }
 
@@ -351,14 +381,18 @@ func TestRenderLineTracksCodeFences(t *testing.T) {
 func TestOnlyTheFirstLineIsMarked(t *testing.T) {
 	m, _ := newTestModel(t, permission.ModeAsk)
 
-	first := m.renderLine("one")
-	second := m.renderLine("two")
+	m.record("one")
+	m.record("two")
 
-	if !strings.Contains(first, "●") {
-		t.Errorf("the first line has no marker: %q", first)
+	rows := m.transcript.render(80)
+	if len(rows) != 2 {
+		t.Fatalf("two recorded lines rendered as %d rows", len(rows))
 	}
-	if strings.Contains(second, "●") {
-		t.Errorf("a later line repeated the marker: %q", second)
+	if !strings.Contains(rows[0], "●") {
+		t.Errorf("the first line has no marker: %q", plain(rows[0]))
+	}
+	if strings.Contains(rows[1], "●") {
+		t.Errorf("a later line repeated the marker: %q", plain(rows[1]))
 	}
 }
 

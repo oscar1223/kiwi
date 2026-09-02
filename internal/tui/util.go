@@ -49,9 +49,9 @@ func jsonUnmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
 // Layout widths.
 //
 // Everything the interface draws is measured against the terminal's current
-// width. In inline mode Bubble Tea repaints the live area in place, so a line
-// wider than the window costs it a row it did not account for and the frame
-// smears — which is what a resize used to expose.
+// width. The frame owns the whole alt screen, so a line wider than the window
+// costs the renderer a row it did not account for and shoves the rest of the
+// frame off the bottom.
 const (
 	// fallbackWidth is used until the first WindowSizeMsg arrives, and by the
 	// tests, which never get one.
@@ -65,6 +65,9 @@ const (
 	// fallbackTailRows caps the streaming preview when the window height is
 	// not known yet, and keeps it from taking the whole screen when it is.
 	fallbackTailRows = 12
+	// promptMarker sits in front of the input. Its width is also how far the
+	// cursor has to be pushed right, so the two cannot drift apart.
+	promptMarker = "› "
 )
 
 // width returns the terminal width to lay out against.
@@ -76,8 +79,13 @@ func (m *Model) termWidth() int {
 }
 
 // textWidth is how wide a line of output may be: the window minus the gutter.
-func (m *Model) textWidth() int {
-	return max(minWidth-gutter, m.termWidth()-gutter)
+func (m *Model) textWidth() int { return textWidthFor(m.termWidth()) }
+
+// textWidthFor is textWidth against a width the Model does not hold, so the
+// transcript can lay itself out for any window rather than only the current
+// one.
+func textWidthFor(width int) int {
+	return max(minWidth-gutter, width-gutter)
 }
 
 // fit truncates a rendered line to width so it can never spill onto a second

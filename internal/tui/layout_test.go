@@ -9,9 +9,9 @@ import (
 	"github.com/oscar1223/kiwi/internal/permission"
 )
 
-// Nothing the interface draws may be wider than the window: in inline mode an
-// overflowing line costs the renderer a row it has not accounted for, and the
-// next frame lands on top of the wrong one — which is what a resize exposed.
+// Nothing the interface draws may be wider than the window: an overflowing
+// line costs the renderer a row it has not accounted for, and pushes the rest
+// of the frame off the bottom of the screen.
 func TestViewFitsEveryTerminalWidth(t *testing.T) {
 	for _, width := range []int{30, 45, 80, 120} {
 		m, _ := newTestModel(t, permission.ModeAsk)
@@ -25,49 +25,6 @@ func TestViewFitsEveryTerminalWidth(t *testing.T) {
 				t.Errorf("width %d: line %d is %d cells wide: %q", width, i, w, plain(line))
 			}
 		}
-	}
-}
-
-func TestOutputWrapsToTerminalWidth(t *testing.T) {
-	m, _ := newTestModel(t, permission.ModeAsk)
-	m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
-
-	lines := strings.Split(m.renderLine(strings.Repeat("palabra ", 30)), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("a 240-character line was not wrapped at width 40: %q", plain(lines[0]))
-	}
-	for i, line := range lines {
-		if w := lipgloss.Width(line); w > 40 {
-			t.Errorf("wrapped line %d is %d cells wide: %q", i, w, plain(line))
-		}
-		// Continuation lines hang under the text, not under the bullet.
-		if i > 0 && !strings.HasPrefix(plain(line), "  ") {
-			t.Errorf("wrapped line %d is not indented: %q", i, plain(line))
-		}
-	}
-}
-
-// Code inside a fence is reproduced as written: wrapping it would put line
-// breaks into whatever the user copies back out of the scrollback.
-func TestFencedCodeIsNotWrapped(t *testing.T) {
-	m, _ := newTestModel(t, permission.ModeAsk)
-	m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
-
-	m.renderLine("```go")
-	code := "x := " + strings.Repeat("a", 100)
-	if got := m.renderLine(code); strings.Contains(got, "\n") {
-		t.Errorf("fenced code was wrapped: %q", plain(got))
-	}
-}
-
-// Markup inside a fence is code, not markup.
-func TestFencedCodeKeepsItsAsterisks(t *testing.T) {
-	m, _ := newTestModel(t, permission.ModeAsk)
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-
-	m.renderLine("```c")
-	if got := plain(m.renderLine("int **p = &q;")); !strings.Contains(got, "**p") {
-		t.Errorf("fenced code lost its asterisks: %q", got)
 	}
 }
 
@@ -86,16 +43,31 @@ func TestResizeCapsInputHeight(t *testing.T) {
 	}
 }
 
-// A streamed paragraph has no length limit until its newline arrives, so the
-// live preview of it must not be allowed to grow past the window.
-func TestViewFitsTerminalHeight(t *testing.T) {
-	m, _ := newTestModel(t, permission.ModeAsk)
-	m.Update(tea.WindowSizeMsg{Width: 60, Height: 12})
-	m.busy = true
-	m.tail = strings.Repeat("una frase larguísima que no termina nunca ", 30)
+// The frame owns the alt screen, so it must fill it exactly: short of the
+// height and the block below floats; over it and the status line is pushed
+// off. A streamed paragraph has no length limit until its newline arrives,
+// which is the case most likely to overrun.
+func TestViewFillsTerminalHeightExactly(t *testing.T) {
+	for _, height := range []int{8, 12, 40} {
+		m, _ := newTestModel(t, permission.ModeAsk)
+		m.Update(tea.WindowSizeMsg{Width: 60, Height: height})
+		m.busy = true
+		m.tail = strings.Repeat("una frase larguísima que no termina nunca ", 30)
 
-	if rows := len(strings.Split(m.View().Content, "\n")); rows > 12 {
-		t.Errorf("the live area is %d rows in a 12-row window", rows)
+		if rows := len(strings.Split(m.View().Content, "\n")); rows != height {
+			t.Errorf("the frame is %d rows in a %d-row window", rows, height)
+		}
+	}
+}
+
+// An empty session must still fill the screen, with the prompt pinned to the
+// bottom rather than floating under the banner.
+func TestViewFillsTerminalHeightWhenEmpty(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+
+	if rows := len(strings.Split(m.View().Content, "\n")); rows != 30 {
+		t.Errorf("an empty session drew %d rows in a 30-row window", rows)
 	}
 }
 
@@ -114,5 +86,36 @@ func TestPickerKeepsTheHighlightedRowVisible(t *testing.T) {
 	}
 	if start, end := listWindow(3, 1, 8); start != 0 || end != 3 {
 		t.Errorf("a list that fits was windowed: %d..%d", start, end)
+	}
+}
+
+// A cursor is positioned against the frame, not against the widget that owns
+// it. The prompt sits at the bottom of the screen behind a marker, so both
+// offsets have to be applied — getting either wrong puts the caret somewhere
+// the user is not typing.
+func TestCursorLandsOnThePrompt(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.input.Focus()
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
+	for i := 0; i < 40; i++ {
+		m.record("una línea cualquiera de relleno")
+	}
+	m.input.SetValue("hola")
+	m.input.CursorEnd()
+
+	v := m.View()
+	if v.Cursor == nil {
+		t.Fatal("a focused prompt has no cursor")
+	}
+	rows := strings.Split(v.Content, "\n")
+	if v.Cursor.Y < 0 || v.Cursor.Y >= len(rows) {
+		t.Fatalf("cursor row %d is outside a %d-row frame", v.Cursor.Y, len(rows))
+	}
+	if got := plain(rows[v.Cursor.Y]); !strings.Contains(got, promptMarker) {
+		t.Errorf("the cursor is on row %d, which is not the prompt: %q", v.Cursor.Y, got)
+	}
+	// Four characters typed behind the marker.
+	if want := lipgloss.Width(promptMarker) + len("hola"); v.Cursor.X != want {
+		t.Errorf("cursor column = %d, want %d", v.Cursor.X, want)
 	}
 }

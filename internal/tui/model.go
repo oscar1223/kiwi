@@ -12,7 +12,6 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 	"github.com/oscar1223/kiwi/internal/agent"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
@@ -60,10 +59,12 @@ type Options struct {
 
 // Model is the Bubble Tea model for Kiwi's terminal interface.
 //
-// Completed output is printed into the terminal's own scrollback rather than
-// held in a viewport, so scrolling, selecting and copying all work the way
-// they do for any other command. Only the live tail — the sentence being
-// streamed, the spinner, the input box — is re-rendered.
+// The frame owns the alt screen: the transcript is held unwrapped (see
+// transcript) and relaid out whenever the window changes, which is what makes
+// a resize correct in both directions. The mouse is deliberately left
+// uncaptured so the terminal's own selection and copy keep working; the scroll
+// wheel reaches us as arrow keys instead, via alternate scroll (see
+// cmd/kiwi/tui.go).
 type Model struct {
 	opts   Options
 	events *Events
@@ -73,6 +74,13 @@ type Model struct {
 
 	width  int
 	height int
+
+	// transcript is everything printed so far, unwrapped. scroll is how many
+	// rows the view is lifted off the bottom; follow keeps it pinned there
+	// while output arrives, until the user scrolls up.
+	transcript transcript
+	scroll     int
+	follow     bool
 
 	history []llm.Message
 	// sessionUsage accumulates token usage across every turn of this TUI
@@ -88,7 +96,7 @@ type Model struct {
 	began  time.Time
 
 	// tail is the incomplete line currently being streamed. Complete lines
-	// are flushed to scrollback as soon as they arrive.
+	// are filed in the transcript as soon as they arrive.
 	tail    string
 	inFence bool
 	spoke   bool
@@ -133,6 +141,11 @@ func New(opts Options) *Model {
 	ta.Prompt = ""
 	ta.SetHeight(1)
 	ta.MaxHeight = 12
+	// The terminal's own cursor rather than a reverse-video block drawn into
+	// the text: it blinks and takes its shape from the user's settings, and it
+	// leaves no inverted cell behind to confuse a mouse selection. View is
+	// what places it, since a cursor is positioned against the whole frame.
+	ta.SetVirtualCursor(false)
 	ta.Focus()
 
 	sp := spinner.New()
@@ -152,7 +165,18 @@ func New(opts Options) *Model {
 		spinner:    sp,
 		history:    append([]llm.Message(nil), opts.History...),
 		saveTokens: tokens,
+		follow:     true,
 	}
+}
+
+// Transcript renders the whole session as plain rows, for reprinting once the
+// alt screen has been torn down and taken the conversation with it.
+func (m *Model) Transcript() string {
+	rows := m.transcript.render(m.termWidth())
+	if len(rows) == 0 {
+		return ""
+	}
+	return strings.Join(rows, "\n") + "\n"
 }
 
 // LogAutoDecision forwards a policy decision to the event stream.
@@ -235,7 +259,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel = nil
 		}
 		return m, tea.Batch(
-			tea.Sequence(m.flushTail(), tea.Println("")),
+			tea.Sequence(m.flushTail(), m.println("")),
 			m.persistTurn(msg.gen, msg.messages),
 			m.events.next(),
 		)
@@ -278,6 +302,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case *textRequest:
 		ti := textinput.New()
+		ti.SetVirtualCursor(false)
 		ti.Placeholder = msg.placeholder
 		ti.SetValue(msg.defaultVal)
 		if msg.secret {
@@ -409,6 +434,37 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Scrolling the transcript. pgup/pgdown and shift+arrows are unambiguous
+	// and always scroll; they are the documented way, because they work
+	// whether or not the terminal supports alternate scroll.
+	switch key {
+	case "pgup":
+		m.scrollBy(-m.pageRows())
+		return m, nil
+	case "pgdown":
+		m.scrollBy(m.pageRows())
+		return m, nil
+	case "shift+up":
+		m.scrollBy(-1)
+		return m, nil
+	case "shift+down":
+		m.scrollBy(1)
+		return m, nil
+	case "up", "down":
+		// The wheel arrives here too: with the mouse uncaptured the terminal
+		// translates it into bare arrows (alternate scroll). They only reach
+		// the transcript when the input cannot use them itself, so a
+		// multi-line prompt still navigates its own text.
+		if !m.inputWantsArrow(key) {
+			if key == "up" {
+				m.scrollBy(-1)
+			} else {
+				m.scrollBy(1)
+			}
+			return m, nil
+		}
+	}
+
 	switch key {
 	case "ctrl+c":
 		if m.busy {
@@ -460,6 +516,11 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // submit starts a new turn.
 func (m *Model) submit(text string) tea.Cmd {
+	// Sending something is a statement that you want to see what comes back,
+	// so it always returns to the newest output — whether it runs a command
+	// or starts a turn.
+	m.scrollToBottom()
+
 	if cmd, handled := m.command(text); handled {
 		return cmd
 	}
@@ -481,7 +542,7 @@ func (m *Model) submit(text string) tea.Cmd {
 	m.cancel = cancel
 
 	// The model gets the file contents; the transcript keeps what the user
-	// actually typed, so scrollback stays readable no matter how much was
+	// actually typed, so the transcript stays readable no matter how much was
 	// attached.
 	sent, attached, missing := expandFileMentions(m.opts.WorkDir, text)
 
@@ -536,7 +597,7 @@ func (m *Model) persistTurn(gen int, turnMessages []llm.Message) tea.Cmd {
 // event still in flight irrelevant, and cancelling the context stops the model
 // stream and kills any child process a tool started.
 // onPickKey drives an open picker: arrows move the highlight, enter resolves
-// it, esc cancels. Resolving prints a one-line record into scrollback — the
+// it, esc cancels. Resolving files a one-line record in the transcript — the
 // same reason permission answers are printed — so what was chosen has a
 // permanent trace, not just a state that vanished with the modal.
 func (m *Model) onPickKey(key string) tea.Cmd {
@@ -734,15 +795,11 @@ func (m *Model) endTurn(err error) tea.Cmd {
 			cmds = append(cmds, m.println(bullet(styleErr.Render("✗"), styleErr.Render(err.Error()))))
 		}
 	}
-	cmds = append(cmds, tea.Println("")) // breathing room before the next turn
+	cmds = append(cmds, m.println("")) // breathing room before the next turn
 	return tea.Sequence(cmds...)
 }
 
-// stream appends a delta and flushes any lines it completed.
-//
-// Printing line by line is what keeps the answer in the terminal's scrollback
-// instead of a repainted region: each finished line is emitted once and never
-// touched again.
+// stream appends a delta and files any lines it completed.
 func (m *Model) stream(delta string) tea.Cmd {
 	m.tail += delta
 	if !strings.Contains(m.tail, "\n") {
@@ -753,64 +810,58 @@ func (m *Model) stream(delta string) tea.Cmd {
 	complete, remainder := parts[:len(parts)-1], parts[len(parts)-1]
 	m.tail = remainder
 
-	var cmds []tea.Cmd
 	for _, line := range complete {
-		cmds = append(cmds, tea.Println(m.renderLine(line)))
+		m.record(line)
 	}
-	// Sequence, not Batch: Batch runs commands concurrently with no ordering
-	// guarantee, which would shuffle the lines of an answer.
-	return tea.Sequence(cmds...)
+	return nil
 }
 
-// flushTail emits the last partial line at the end of a turn.
+// flushTail files the last partial line at the end of a turn.
 func (m *Model) flushTail() tea.Cmd {
 	if m.tail == "" {
 		return nil
 	}
 	line := m.tail
 	m.tail = ""
-	return tea.Println(m.renderLine(line))
+	m.record(line)
+	return nil
 }
 
-// renderLine styles one line of assistant output and wraps it to the terminal.
+// record files one line of assistant output in the transcript.
 //
 // It is the only place the fence state moves, because it is the only one that
 // sees every line exactly once: the live tail is re-rendered on every delta
-// (see styleLine) and must not toggle anything.
-func (m *Model) renderLine(line string) string {
+// (see styleLine) and must not toggle anything. Resolving the fence here
+// rather than at render time is what lets the transcript be rewrapped as often
+// as the window changes without the fences walking.
+func (m *Model) record(line string) {
 	prefix := "  "
 	if !m.spoke {
 		prefix = styleKiwi.Render("● ")
 		m.spoke = true
 	}
 
-	if strings.HasPrefix(strings.TrimSpace(line), "```") {
+	switch {
+	case strings.HasPrefix(strings.TrimSpace(line), "```"):
 		m.inFence = !m.inFence
-		return prefix + styleDim.Render(line)
+		m.transcript.add(entry{kind: entryFence, text: line, prefix: prefix})
+	case m.inFence:
+		m.transcript.add(entry{kind: entryCode, text: line, prefix: prefix})
+	default:
+		m.transcript.add(entry{kind: entryProse, text: line, prefix: prefix})
 	}
-	if m.inFence {
-		// Code is reproduced as written: wrapping it would put line breaks
-		// into what the user copies back out of the scrollback.
-		return prefix + styleCode.Render(line)
-	}
-	return wrapIndent(prefix, hangingIndent(line), m.styleLine(line), m.textWidth())
 }
 
-// println prints to the terminal's scrollback, wrapped to the window.
+// println files already-styled text in the transcript.
 //
-// Breaking the lines here rather than leaving it to the terminal is what makes
-// old output survive a resize: a line Kiwi wrapped itself keeps the breaks it
-// was printed with, while one the terminal soft-wrapped is re-flowed — or, in
-// terminals that do not reflow, left ragged — the moment the window changes.
+// It keeps its name and its tea.Cmd result because three dozen call sites
+// compose it with other commands. Nothing reaches the terminal directly any
+// more — the frame is redrawn from the transcript — so the command is nil and
+// the ordering that used to come from tea.Sequence now comes from the order
+// the calls are evaluated in.
 func (m *Model) println(s string) tea.Cmd {
-	width := m.termWidth()
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		if lipgloss.Width(line) > width {
-			lines[i] = ansi.Wrap(line, width, "")
-		}
-	}
-	return tea.Println(strings.Join(lines, "\n"))
+	m.transcript.addStyled(s)
+	return nil
 }
 
 // renderTail draws the sentence currently being streamed.
@@ -818,8 +869,8 @@ func (m *Model) println(s string) tea.Cmd {
 // It is wrapped rather than truncated — it is the text being written, and it
 // has to stay readable past one row — and then capped to the rows the window
 // can spare. The last rows are the ones kept, because that is where the text
-// is arriving; nothing is lost either way, since every line is printed to the
-// scrollback in full the moment its newline arrives.
+// is arriving; nothing is lost either way, since every line is filed in the
+// transcript in full the moment its newline arrives.
 func (m *Model) renderTail() string {
 	lines := strings.Split(wrapIndent("  ", hangingIndent(m.tail), m.styleLine(m.tail), m.textWidth()), "\n")
 	if limit := m.tailRows(); len(lines) > limit {
@@ -860,6 +911,53 @@ func (m *Model) styleLine(line string) string {
 	return renderMarkdown(line, styleKiwi)
 }
 
+// pageRows is how far pgup/pgdown move: a screenful less a couple of rows, so
+// something stays on screen to anchor the eye.
+func (m *Model) pageRows() int {
+	return max(1, m.viewportHeight()-2)
+}
+
+// viewportHeight is how many rows the transcript gets in the current window.
+func (m *Model) viewportHeight() int {
+	bottom, _, _ := m.bottomBlock(m.termWidth())
+	return max(1, m.height-len(bottom))
+}
+
+// inputWantsArrow reports whether the prompt itself should consume an up or
+// down arrow, which it should only while there is another line of its own to
+// move onto.
+func (m *Model) inputWantsArrow(key string) bool {
+	if m.input.LineCount() <= 1 {
+		return false
+	}
+	if key == "up" {
+		return m.input.Line() > 0
+	}
+	return m.input.Line() < m.input.LineCount()-1
+}
+
+// scrollBy moves the transcript view by n rows.
+//
+// Reaching the bottom re-arms follow mode, so scrolling back down to catch up
+// with a running turn also resumes tracking it; scrolling up anywhere else
+// drops out of it, which is what stops the view from yanking itself back to
+// the bottom on the next delta.
+func (m *Model) scrollBy(n int) {
+	height := m.viewportHeight()
+	total := len(m.transcriptRows(m.termWidth()))
+	maxScroll := max(0, total-height)
+
+	to := min(maxScroll, max(0, m.scrollOffset(total, height)+n))
+	m.scroll = to
+	m.follow = to >= maxScroll
+}
+
+// scrollToBottom re-pins the view to the newest output.
+func (m *Model) scrollToBottom() {
+	m.follow = true
+	m.scroll = 0
+}
+
 // resize re-lays out the live area for the current terminal size.
 //
 // Both bounds matter. The width keeps the input from spilling past the right
@@ -890,64 +988,143 @@ func (m *Model) applyMode(mode permission.Mode) {
 }
 
 func (m *Model) View() tea.View {
-	var b strings.Builder
-
-	// Every branch below lays itself out against width: in inline mode a line
-	// that overflows the window costs the renderer a row it did not count,
-	// and the frame it repaints on top of the old one no longer lines up.
 	width := m.termWidth()
 
-	switch {
-	case m.pending != nil:
-		b.WriteString(styleWarn.Render("  allow? [y/N] "))
-		b.WriteString("\n")
-	case m.activePick != nil:
-		b.WriteString(renderPick(m.activePick, width, m.listRows()))
-		b.WriteString("\n")
-	case m.activeText != nil:
-		b.WriteString(renderTextPrompt(m.activeText, width))
-		b.WriteString("\n")
-	case m.activeQuestion != nil:
-		b.WriteString(renderQuestion(m.activeQuestion, width))
-		b.WriteString("\n")
-	default:
-		if m.tail != "" {
-			b.WriteString(m.renderTail())
-			b.WriteString("\n")
-		}
-		if m.busy {
-			b.WriteString(fit(sprintf("%s %s",
-				m.spinner.View(),
-				styleDim.Render(sprintf("working… %s · esc to cancel", elapsed(m.began)))), width))
-			b.WriteString("\n")
-		}
-	}
+	// The bottom block is laid out first: whatever it needs is what the
+	// transcript above it does not get. Sizing them the other way round is
+	// how a tall input or a long picker ends up shoving the prompt off the
+	// screen.
+	bottom, cursorRow, cursorCol := m.bottomBlock(width)
+	top := m.viewportBlock(width, max(1, m.height-len(bottom)))
 
-	b.WriteString(m.statusLine())
-	b.WriteString("\n")
+	rows := append(top, bottom...)
+	v := tea.NewView(strings.Join(rows, "\n"))
 
-	blocked := m.pending != nil || m.activePick != nil || m.activeText != nil || m.activeQuestion != nil
-	if !blocked {
-		b.WriteString(stylePrompt.Render("› "))
-		b.WriteString(m.input.View())
+	// Own the whole screen. The transcript is redrawn from unwrapped entries,
+	// so a resize relays it out correctly instead of inheriting breaks
+	// measured against the old window.
+	v.AltScreen = true
+	// Deliberately uncaptured: with no mouse tracking the terminal keeps
+	// handling the mouse itself, so selecting and copying work as they do in
+	// any other program. The wheel still scrolls, reaching us as arrow keys
+	// via alternate scroll — a mode the terminal only honours while nothing
+	// is capturing the mouse. See cmd/kiwi/tui.go.
+	v.MouseMode = tea.MouseModeNone
 
-		if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
-			b.WriteString("\n")
-			b.WriteString(renderSlashSuggestions(suggestions, m.cmdSuggestIndex, width))
-		}
-	}
-
-	v := tea.NewView(b.String())
-	switch {
-	case m.activeText != nil:
-		v.Cursor = m.activeText.input.Cursor()
-	case m.activeQuestion != nil && m.activeQuestion.otherActive:
-		v.Cursor = m.activeQuestion.otherInput.Cursor()
-	case !blocked:
-		v.Cursor = m.input.Cursor()
+	// A cursor is positioned against the frame, not against the widget that
+	// owns it, so it has to be pushed down by everything drawn above.
+	if c := m.activeCursor(); c != nil {
+		c.Y += len(top) + cursorRow
+		c.X += cursorCol
+		v.Cursor = c
 	}
 	return v
 }
+
+// activeCursor is the cursor of whichever input currently has focus.
+func (m *Model) activeCursor() *tea.Cursor {
+	switch {
+	case m.activeText != nil:
+		return m.activeText.input.Cursor()
+	case m.activeQuestion != nil && m.activeQuestion.otherActive:
+		return m.activeQuestion.otherInput.Cursor()
+	case m.blocked():
+		return nil
+	default:
+		return m.input.Cursor()
+	}
+}
+
+// blocked reports whether something modal is waiting on the user, in which
+// case the ordinary prompt is not drawn.
+func (m *Model) blocked() bool {
+	return m.pending != nil || m.activePick != nil ||
+		m.activeText != nil || m.activeQuestion != nil
+}
+
+// bottomBlock draws everything pinned below the transcript: the separator, the
+// input or whatever modal has replaced it, and the status line last.
+//
+// It also returns where the focused input starts inside the block — the row
+// it opens on and the column its text begins at — which is what the cursor has
+// to be offset by.
+func (m *Model) bottomBlock(width int) (rows []string, cursorRow, cursorCol int) {
+	if m.busy {
+		rows = append(rows, fit(sprintf("%s %s",
+			m.spinner.View(),
+			styleDim.Render(sprintf("working… %s · esc to cancel", elapsed(m.began)))), width))
+	}
+
+	switch {
+	case m.pending != nil:
+		rows = append(rows, fit(styleWarn.Render("  allow? [y/N] "), width))
+	case m.activePick != nil:
+		rows = append(rows, splitRows(renderPick(m.activePick, width, m.listRows()))...)
+	case m.activeText != nil:
+		rows = append(rows, splitRows(renderTextPrompt(m.activeText, width))...)
+		// Both modal prompts draw their input as the last row of the block,
+		// behind the same two-column gutter as everything else.
+		cursorRow, cursorCol = len(rows)-1, gutter
+	case m.activeQuestion != nil:
+		rows = append(rows, splitRows(renderQuestion(m.activeQuestion, width))...)
+		cursorRow, cursorCol = len(rows)-1, gutter
+	default:
+		rows = append(rows, styleDim.Render(strings.Repeat("─", width)))
+		cursorRow, cursorCol = len(rows), lipgloss.Width(promptMarker)
+		rows = append(rows, splitRows(stylePrompt.Render(promptMarker)+m.input.View())...)
+		if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
+			rows = append(rows, splitRows(renderSlashSuggestions(suggestions, m.cmdSuggestIndex, width))...)
+		}
+	}
+
+	return append(rows, m.statusLine()), cursorRow, cursorCol
+}
+
+// viewportBlock draws the visible slice of the transcript, padded to fill
+// exactly height rows so the block below it stays pinned to the bottom of the
+// screen whether the conversation is long or empty.
+func (m *Model) viewportBlock(width, height int) []string {
+	content := m.transcriptRows(width)
+	start := m.scrollOffset(len(content), height)
+
+	out := make([]string, height)
+	for i := range out {
+		if src := start + i; src < len(content) {
+			out[i] = content[src]
+		}
+	}
+	return out
+}
+
+// transcriptRows is the transcript plus the sentence currently streaming,
+// which is shown in place at the end rather than in a region of its own.
+func (m *Model) transcriptRows(width int) []string {
+	rows := m.transcript.render(width)
+	if m.tail == "" {
+		return rows
+	}
+	// Copied rather than appended in place: the slice returned above is the
+	// transcript's own cache, and growing it would write into it.
+	out := make([]string, 0, len(rows)+1)
+	out = append(out, rows...)
+	return append(out, splitRows(m.renderTail())...)
+}
+
+// scrollOffset is the first transcript row visible in a window of the given
+// height.
+//
+// It clamps rather than mutating m.scroll: View runs on every frame and on
+// every streamed delta, and a View that edits the model is a View whose output
+// depends on how many times it has been called.
+func (m *Model) scrollOffset(total, height int) int {
+	maxScroll := max(0, total-height)
+	if m.follow {
+		return maxScroll
+	}
+	return min(max(0, m.scroll), maxScroll)
+}
+
+func splitRows(s string) []string { return strings.Split(s, "\n") }
 
 // renderPick draws an arrow-navigable list: the highlighted option gets the
 // kiwi-coloured marker, everything else stays dim.
@@ -1347,7 +1524,9 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 		return m.println(helpText()), true
 	case "/clear":
 		m.history = nil
-		return tea.Batch(tea.ClearScreen, m.println(banner(m.opts.ModelLabel, m.opts.WorkDir))), true
+		m.transcript.reset()
+		m.spoke = false
+		return m.println(banner(m.opts.ModelLabel, m.opts.WorkDir)), true
 	case "/ask", "/plan", "/work":
 		mode := permission.Mode(strings.TrimPrefix(strings.Fields(text)[0], "/"))
 		m.opts.Broker.SetMode(mode)

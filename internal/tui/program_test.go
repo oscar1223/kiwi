@@ -149,7 +149,12 @@ func runProgramOpts(t *testing.T, po programOpts) (string, *Model) {
 	}
 	inWriter.Close()
 
-	return ansiRE.ReplaceAllString(out.String(), ""), m
+	// The transcript, not the raw terminal bytes. Now that the frame owns the
+	// alt screen, what reaches the output buffer is a stream of differential
+	// repaints of a screen that is torn down again on exit — the transcript is
+	// what Kiwi actually decided to show, and it is what survives the exit.
+	_ = out
+	return ansiRE.ReplaceAllString(m.Transcript(), ""), m
 }
 
 func TestProgramStreamsAnAnswer(t *testing.T) {
