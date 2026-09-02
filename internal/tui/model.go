@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/oscar1223/kiwi/internal/agent"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
@@ -170,7 +171,7 @@ func (m *Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.events.next(),
 		m.input.Focus(),
-		tea.Println(banner(m.opts.ModelLabel, m.opts.WorkDir)),
+		m.println(banner(m.opts.ModelLabel, m.opts.WorkDir)),
 	)
 }
 
@@ -178,7 +179,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.SetWidth(max(20, msg.Width-4))
+		m.resize()
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -206,7 +207,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.events.next()
 		}
 		return m, tea.Batch(
-			tea.Sequence(m.flushTail(), tea.Println(renderToolCall(msg.call))),
+			tea.Sequence(m.flushTail(), m.println(renderToolCall(msg.call))),
 			m.events.next(),
 		)
 
@@ -215,7 +216,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.events.next()
 		}
 		return m, tea.Batch(
-			tea.Println(renderToolResult(msg.output, msg.isErr)),
+			m.println(renderToolResult(msg.output, msg.isErr)),
 			m.events.next(),
 		)
 
@@ -248,7 +249,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case historyPersistedMsg:
 		if msg.err != nil {
 			return m, tea.Batch(
-				tea.Println(styleWarn.Render("  (session not saved: "+msg.err.Error()+")")),
+				m.println(styleWarn.Render("  (session not saved: "+msg.err.Error()+")")),
 				m.events.next(),
 			)
 		}
@@ -266,10 +267,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A pending request is answered before another can arrive, because
 		// Update is the only consumer and it parks here until resolved.
 		m.pending = msg.req
-		return m, tea.Batch(tea.Println(renderPermissionPrompt(msg.req)), m.events.next())
+		return m, tea.Batch(m.println(renderPermissionPrompt(msg.req)), m.events.next())
 
 	case autoDecisionMsg:
-		return m, tea.Batch(tea.Println(renderAutoDecision(msg.req, msg.allowed)), m.events.next())
+		return m, tea.Batch(m.println(renderAutoDecision(msg.req, msg.allowed)), m.events.next())
 
 	case *pickRequest:
 		m.activePick = &pickState{req: msg}
@@ -292,32 +293,32 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.events.next()
 
 	case systemMsg:
-		return m, tea.Batch(tea.Println(bullet(styleDim.Render("·"), styleDim.Render(msg.text))), m.events.next())
+		return m, tea.Batch(m.println(bullet(styleDim.Render("·"), styleDim.Render(msg.text))), m.events.next())
 
 	case errMsg:
-		return m, tea.Batch(tea.Println(bullet(styleErr.Render("✗"), styleErr.Render(msg.err.Error()))), m.events.next())
+		return m, tea.Batch(m.println(bullet(styleErr.Render("✗"), styleErr.Render(msg.err.Error()))), m.events.next())
 
 	case printLinesMsg:
 		prints := make([]tea.Cmd, 0, len(msg.lines))
 		for _, l := range msg.lines {
-			prints = append(prints, tea.Println(l))
+			prints = append(prints, m.println(l))
 		}
 		return m, tea.Batch(tea.Sequence(prints...), m.events.next())
 
 	case clearHistoryMsg:
 		m.history = nil
-		return m, tea.Batch(tea.Println(styleDim.Render("  memory cleared")), m.events.next())
+		return m, tea.Batch(m.println(styleDim.Render("  memory cleared")), m.events.next())
 
 	case historyCompactedMsg:
 		m.history = msg.history
 		line := sprintf("  compacted: %d messages → %d", msg.before, len(msg.history))
-		return m, tea.Batch(tea.Println(styleDim.Render(line)), m.events.next())
+		return m, tea.Batch(m.println(styleDim.Render(line)), m.events.next())
 
 	case sessionSwitchedMsg:
 		m.opts.SessionID = msg.sessionID
 		m.history = msg.history
 		line := styleDim.Render("  switched to session " + msg.sessionID + " (" + msg.title + ")")
-		return m, tea.Batch(tea.Println(line), m.events.next())
+		return m, tea.Batch(m.println(line), m.events.next())
 
 	case requestRebuildMsg:
 		return m, tea.Batch(m.rebuildAgent(), m.events.next())
@@ -325,7 +326,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentRebuiltMsg:
 		m.opts.Agent = msg.agent
 		m.opts.ModelLabel = msg.modelLabel
-		return m, tea.Batch(tea.Println(styleDim.Render("  reloaded: "+msg.modelLabel)), m.events.next())
+		return m, tea.Batch(m.println(styleDim.Render("  reloaded: "+msg.modelLabel)), m.events.next())
 
 	case flowDoneMsg:
 		m.flowBusy = false
@@ -348,12 +349,12 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			req := m.pending
 			m.pending = nil
 			req.Allow()
-			return m, tea.Println(styleDim.Render("  approved"))
+			return m, m.println(styleDim.Render("  approved"))
 		case "n", "N", "esc", "ctrl+c":
 			req := m.pending
 			m.pending = nil
 			req.Deny()
-			return m, tea.Println(styleDim.Render("  denied"))
+			return m, m.println(styleDim.Render("  denied"))
 		}
 		return m, nil
 	}
@@ -438,7 +439,7 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		next := m.opts.Broker.Mode().Next()
 		m.opts.Broker.SetMode(next)
 		m.applyMode(next)
-		return m, tea.Println(renderModeChange(next))
+		return m, m.println(renderModeChange(next))
 
 	case "enter":
 		if m.busy || m.flowBusy || m.opts.Agent == nil {
@@ -498,7 +499,7 @@ func (m *Model) submit(text string) tea.Cmd {
 	}
 
 	return tea.Batch(
-		tea.Println(strings.Join(lines, "\n")),
+		m.println(strings.Join(lines, "\n")),
 		m.spinner.Tick,
 	)
 }
@@ -557,14 +558,14 @@ func (m *Model) onPickKey(key string) tea.Cmd {
 		m.activePick = nil
 		choice := p.selected()
 		p.req.resp <- pickResult{value: choice.Value, ok: true}
-		return tea.Println(bullet(styleDim.Render("·"), styleDim.Render(p.req.title+": "+choice.Label)))
+		return m.println(bullet(styleDim.Render("·"), styleDim.Render(p.req.title+": "+choice.Label)))
 	case "esc", "ctrl+c":
 		m.activePick = nil
 		if p.req.onCancel != nil {
 			p.req.onCancel()
 		}
 		p.req.resp <- pickResult{ok: false}
-		return tea.Println(styleDim.Render("  cancelled"))
+		return m.println(styleDim.Render("  cancelled"))
 	}
 	return nil
 }
@@ -605,11 +606,11 @@ func (m *Model) onTextKey(msg tea.KeyPressMsg, key string) tea.Cmd {
 		case shown == "":
 			shown = styleDim.Render("(empty)")
 		}
-		return tea.Println(bullet(styleDim.Render("·"), styleDim.Render(t.req.title+": ")+shown))
+		return m.println(bullet(styleDim.Render("·"), styleDim.Render(t.req.title+": ")+shown))
 	case "esc", "ctrl+c":
 		m.activeText = nil
 		t.req.resp <- textResult{ok: false}
-		return tea.Println(styleDim.Render("  cancelled"))
+		return m.println(styleDim.Render("  cancelled"))
 	}
 	var cmd tea.Cmd
 	t.input, cmd = t.input.Update(msg)
@@ -659,7 +660,7 @@ func (m *Model) onQuestionKey(msg tea.KeyPressMsg, key string) tea.Cmd {
 	case "esc", "ctrl+c":
 		m.activeQuestion = nil
 		qs.req.resp <- questionResult{ok: false}
-		return tea.Println(styleDim.Render("  cancelled"))
+		return m.println(styleDim.Render("  cancelled"))
 	case "space":
 		if !qs.req.q.MultiSelect {
 			return nil
@@ -697,7 +698,7 @@ func (m *Model) resolveQuestion(values []string) tea.Cmd {
 	m.activeQuestion = nil
 	qs.req.resp <- questionResult{values: values, ok: true}
 	line := qs.req.q.Question + ": " + strings.Join(values, ", ")
-	return tea.Println(bullet(styleDim.Render("·"), styleDim.Render(line)))
+	return m.println(bullet(styleDim.Render("·"), styleDim.Render(line)))
 }
 
 func (m *Model) cancelTurn() tea.Cmd {
@@ -712,9 +713,9 @@ func (m *Model) cancelTurn() tea.Cmd {
 
 	var cmds []tea.Cmd
 	if tail != "" {
-		cmds = append(cmds, tea.Println(styleKiwi.Render("  "+tail)))
+		cmds = append(cmds, m.println(styleKiwi.Render("  "+tail)))
 	}
-	cmds = append(cmds, tea.Println(styleWarn.Render("  cancelled")))
+	cmds = append(cmds, m.println(styleWarn.Render("  cancelled")))
 	return tea.Sequence(cmds...)
 }
 
@@ -728,9 +729,9 @@ func (m *Model) endTurn(err error) tea.Cmd {
 	cmds := []tea.Cmd{m.flushTail()}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			cmds = append(cmds, tea.Println(styleWarn.Render("  cancelled")))
+			cmds = append(cmds, m.println(styleWarn.Render("  cancelled")))
 		} else {
-			cmds = append(cmds, tea.Println(bullet(styleErr.Render("✗"), styleErr.Render(err.Error()))))
+			cmds = append(cmds, m.println(bullet(styleErr.Render("✗"), styleErr.Render(err.Error()))))
 		}
 	}
 	cmds = append(cmds, tea.Println("")) // breathing room before the next turn
@@ -771,10 +772,11 @@ func (m *Model) flushTail() tea.Cmd {
 	return tea.Println(m.renderLine(line))
 }
 
-// renderLine styles one line of assistant output. Full markdown rendering
-// needs whole blocks, which streaming does not have; tracking fences is what
-// can be done a line at a time, and it covers the case that matters most in a
-// coding agent.
+// renderLine styles one line of assistant output and wraps it to the terminal.
+//
+// It is the only place the fence state moves, because it is the only one that
+// sees every line exactly once: the live tail is re-rendered on every delta
+// (see styleLine) and must not toggle anything.
 func (m *Model) renderLine(line string) string {
 	prefix := "  "
 	if !m.spoke {
@@ -787,9 +789,97 @@ func (m *Model) renderLine(line string) string {
 		return prefix + styleDim.Render(line)
 	}
 	if m.inFence {
+		// Code is reproduced as written: wrapping it would put line breaks
+		// into what the user copies back out of the scrollback.
 		return prefix + styleCode.Render(line)
 	}
-	return prefix + styleKiwi.Render(line)
+	return wrapIndent(prefix, hangingIndent(line), m.styleLine(line), m.textWidth())
+}
+
+// println prints to the terminal's scrollback, wrapped to the window.
+//
+// Breaking the lines here rather than leaving it to the terminal is what makes
+// old output survive a resize: a line Kiwi wrapped itself keeps the breaks it
+// was printed with, while one the terminal soft-wrapped is re-flowed — or, in
+// terminals that do not reflow, left ragged — the moment the window changes.
+func (m *Model) println(s string) tea.Cmd {
+	width := m.termWidth()
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		if lipgloss.Width(line) > width {
+			lines[i] = ansi.Wrap(line, width, "")
+		}
+	}
+	return tea.Println(strings.Join(lines, "\n"))
+}
+
+// renderTail draws the sentence currently being streamed.
+//
+// It is wrapped rather than truncated — it is the text being written, and it
+// has to stay readable past one row — and then capped to the rows the window
+// can spare. The last rows are the ones kept, because that is where the text
+// is arriving; nothing is lost either way, since every line is printed to the
+// scrollback in full the moment its newline arrives.
+func (m *Model) renderTail() string {
+	lines := strings.Split(wrapIndent("  ", hangingIndent(m.tail), m.styleLine(m.tail), m.textWidth()), "\n")
+	if limit := m.tailRows(); len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// tailRows is how many rows the tail may occupy: what is left of the window
+// once the spinner, the status line and the input have taken theirs.
+func (m *Model) tailRows() int {
+	if m.height <= 0 {
+		return fallbackTailRows
+	}
+	// One row each for the spinner and the status line, one for the prompt,
+	// and the rest of the input's own height.
+	reserved := 3 + m.input.Height()
+	return max(1, min(m.height-reserved, fallbackTailRows))
+}
+
+// listRows is how many rows a picker's option list may occupy. An unknown
+// window height means no cap: it is what the tests run with, and a list that
+// is too long there is a visible bug rather than a corrupted frame.
+func (m *Model) listRows() int {
+	if m.height <= 0 {
+		return 1 << 30
+	}
+	// The title, the status line, the prompt, and room to breathe.
+	return max(2, m.height-5)
+}
+
+// styleLine styles one line of assistant output for the fence state as it
+// currently stands, without changing it.
+func (m *Model) styleLine(line string) string {
+	if m.inFence {
+		return styleCode.Render(line)
+	}
+	return renderMarkdown(line, styleKiwi)
+}
+
+// resize re-lays out the live area for the current terminal size.
+//
+// Both bounds matter. The width keeps the input from spilling past the right
+// edge, which would cost the renderer a row it has not accounted for; the
+// height caps how far the input may grow, so a long prompt in a short window
+// cannot push the whole frame off screen.
+func (m *Model) resize() {
+	m.input.SetWidth(max(10, m.termWidth()-4))
+
+	// Rows reserved for everything the input shares the frame with: the
+	// status line, the suggestion list, and a little room to breathe.
+	const chrome = 4
+	maxInput := 12
+	if m.height > 0 {
+		maxInput = min(maxInput, max(1, m.height-chrome))
+	}
+	m.input.MaxHeight = maxInput
+	if m.input.Height() > maxInput {
+		m.input.SetHeight(maxInput)
+	}
 }
 
 // applyMode rebuilds the system prompt so the model knows what it may do.
@@ -802,27 +892,34 @@ func (m *Model) applyMode(mode permission.Mode) {
 func (m *Model) View() tea.View {
 	var b strings.Builder
 
+	// Every branch below lays itself out against width: in inline mode a line
+	// that overflows the window costs the renderer a row it did not count,
+	// and the frame it repaints on top of the old one no longer lines up.
+	width := m.termWidth()
+
 	switch {
 	case m.pending != nil:
 		b.WriteString(styleWarn.Render("  allow? [y/N] "))
 		b.WriteString("\n")
 	case m.activePick != nil:
-		b.WriteString(renderPick(m.activePick))
+		b.WriteString(renderPick(m.activePick, width, m.listRows()))
 		b.WriteString("\n")
 	case m.activeText != nil:
-		b.WriteString(renderTextPrompt(m.activeText))
+		b.WriteString(renderTextPrompt(m.activeText, width))
 		b.WriteString("\n")
 	case m.activeQuestion != nil:
-		b.WriteString(renderQuestion(m.activeQuestion))
+		b.WriteString(renderQuestion(m.activeQuestion, width))
 		b.WriteString("\n")
 	default:
 		if m.tail != "" {
-			b.WriteString("  " + styleKiwi.Render(m.tail) + "\n")
+			b.WriteString(m.renderTail())
+			b.WriteString("\n")
 		}
 		if m.busy {
-			b.WriteString(sprintf("%s %s\n",
+			b.WriteString(fit(sprintf("%s %s",
 				m.spinner.View(),
-				styleDim.Render(sprintf("working… %s · esc to cancel", elapsed(m.began)))))
+				styleDim.Render(sprintf("working… %s · esc to cancel", elapsed(m.began)))), width))
+			b.WriteString("\n")
 		}
 	}
 
@@ -836,7 +933,7 @@ func (m *Model) View() tea.View {
 
 		if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
 			b.WriteString("\n")
-			b.WriteString(renderSlashSuggestions(suggestions, m.cmdSuggestIndex))
+			b.WriteString(renderSlashSuggestions(suggestions, m.cmdSuggestIndex, width))
 		}
 	}
 
@@ -854,26 +951,50 @@ func (m *Model) View() tea.View {
 
 // renderPick draws an arrow-navigable list: the highlighted option gets the
 // kiwi-coloured marker, everything else stays dim.
-func renderPick(p *pickState) string {
+func renderPick(p *pickState, width, rows int) string {
 	var b strings.Builder
-	b.WriteString(styleWarn.Render("  " + p.req.title))
-	b.WriteString(styleDim.Render("  (↑↓ enter · esc cancels)"))
+	b.WriteString(fit(styleWarn.Render("  "+p.req.title)+
+		styleDim.Render("  (↑↓ enter · esc cancels)"), width))
 	b.WriteString("\n")
-	for i, opt := range p.req.options {
+	start, end := listWindow(len(p.req.options), p.index, rows)
+	for i := start; i < end; i++ {
+		// Rows are truncated rather than wrapped: a list whose row count
+		// depends on how long its labels are is a list that jumps around
+		// under the cursor.
 		if i == p.index {
-			b.WriteString(styleKiwi.Render("  ▸ " + opt.Label))
+			b.WriteString(fit(styleKiwi.Render("  ▸ "+p.req.options[i].Label), width))
 		} else {
-			b.WriteString(styleDim.Render("    " + opt.Label))
+			b.WriteString(fit(styleDim.Render("    "+p.req.options[i].Label), width))
 		}
+		b.WriteString("\n")
+	}
+	if hidden := len(p.req.options) - (end - start); hidden > 0 {
+		b.WriteString(fit(styleDim.Render(sprintf("    … %d more", hidden)), width))
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
-func renderTextPrompt(t *textState) string {
+// listWindow picks the slice of a list to show when it does not fit, keeping
+// the highlighted row inside it — a list that scrolls the cursor off screen is
+// a list you cannot navigate.
+func listWindow(count, index, limit int) (start, end int) {
+	if limit < 1 {
+		limit = 1
+	}
+	if count <= limit {
+		return 0, count
+	}
+	// One row goes to the "… n more" line, so the window is one shorter.
+	limit = max(1, limit-1)
+	start = max(0, min(index-limit/2, count-limit))
+	return start, start + limit
+}
+
+func renderTextPrompt(t *textState, width int) string {
 	var b strings.Builder
-	b.WriteString(styleWarn.Render("  " + t.req.title))
-	b.WriteString(styleDim.Render("  (enter confirms · esc cancels)"))
+	b.WriteString(fit(styleWarn.Render("  "+t.req.title)+
+		styleDim.Render("  (enter confirms · esc cancels)"), width))
 	b.WriteString("\n  ")
 	b.WriteString(t.input.View())
 	return b.String()
@@ -882,15 +1003,17 @@ func renderTextPrompt(t *textState) string {
 // renderQuestion draws one ask_questions prompt: an arrow-navigable list
 // like renderPick, plus checkboxes when the question is multi-select and a
 // trailing "Other" row that switches to free-text entry.
-func renderQuestion(qs *questionState) string {
+func renderQuestion(qs *questionState, width int) string {
 	q := qs.req.q
 	var b strings.Builder
-	b.WriteString(styleWarn.Render("  " + q.Question))
+	hint := "  (↑↓ enter · esc cancels)"
 	if q.MultiSelect {
-		b.WriteString(styleDim.Render("  (↑↓ space toggles · enter confirms · esc cancels)"))
-	} else {
-		b.WriteString(styleDim.Render("  (↑↓ enter · esc cancels)"))
+		hint = "  (↑↓ space toggles · enter confirms · esc cancels)"
 	}
+	// The question itself is the one thing here worth wrapping: it can be a
+	// whole sentence, and cutting it off would hide what is being asked.
+	b.WriteString(wrapIndent("  ", 0, styleWarn.Render(q.Question), max(minWidth-gutter, width-gutter)))
+	b.WriteString(fit(styleDim.Render(hint), width))
 	b.WriteString("\n")
 
 	if qs.otherActive {
@@ -905,14 +1028,14 @@ func renderQuestion(qs *questionState) string {
 		if opt.Description != "" {
 			line += " — " + opt.Description
 		}
-		b.WriteString(renderQuestionRow(checkbox(q.MultiSelect, qs.selected[i])+line, i == qs.index))
+		b.WriteString(renderQuestionRow(checkbox(q.MultiSelect, qs.selected[i])+line, i == qs.index, width))
 	}
 
 	other := "Other (type your own)"
 	if qs.otherText != "" {
 		other += ": " + qs.otherText
 	}
-	b.WriteString(renderQuestionRow(checkbox(q.MultiSelect, qs.selected[qs.otherIndex()])+other, qs.index == qs.otherIndex()))
+	b.WriteString(renderQuestionRow(checkbox(q.MultiSelect, qs.selected[qs.otherIndex()])+other, qs.index == qs.otherIndex(), width))
 	return b.String()
 }
 
@@ -927,18 +1050,18 @@ func checkbox(multiSelect, checked bool) string {
 	}
 }
 
-func renderQuestionRow(line string, highlighted bool) string {
+func renderQuestionRow(line string, highlighted bool, width int) string {
 	if highlighted {
-		return styleKiwi.Render("  ▸ "+line) + "\n"
+		return fit(styleKiwi.Render("  ▸ "+line), width) + "\n"
 	}
-	return styleDim.Render("    "+line) + "\n"
+	return fit(styleDim.Render("    "+line), width) + "\n"
 }
 
 // maxSlashSuggestions caps how many rows the "/" autocomplete shows at once,
 // so a broad query (bare "/") does not push the input off screen.
 const maxSlashSuggestions = 6
 
-func renderSlashSuggestions(suggestions []commandSpec, index int) string {
+func renderSlashSuggestions(suggestions []commandSpec, index int, width int) string {
 	shown := suggestions
 	if len(shown) > maxSlashSuggestions {
 		shown = shown[:maxSlashSuggestions]
@@ -950,9 +1073,9 @@ func renderSlashSuggestions(suggestions []commandSpec, index int) string {
 	for i, c := range shown {
 		line := sprintf("%-12s %s", c.Name, c.Desc)
 		if i == index {
-			b.WriteString(styleKiwi.Render("  ▸ " + line))
+			b.WriteString(fit(styleKiwi.Render("  ▸ "+line), width))
 		} else {
-			b.WriteString(styleDim.Render("    " + line))
+			b.WriteString(fit(styleDim.Render("    "+line), width))
 		}
 		if i < len(shown)-1 {
 			b.WriteString("\n")
@@ -981,10 +1104,14 @@ func (m *Model) statusLine() string {
 			sprintf("ctx %d%%", percentOf(used, window))))
 	}
 	line := strings.Join(parts, styleDim.Render(" · "))
+	width := m.termWidth()
 	hint := styleDim.Render("shift+tab: mode")
-	gap := m.width - lipgloss.Width(line) - lipgloss.Width(hint)
+	gap := width - lipgloss.Width(line) - lipgloss.Width(hint)
 	if gap < 1 {
-		return line
+		// Too narrow for both: the state is worth more than the shortcut, so
+		// the hint goes and what is left is cut to the window rather than
+		// wrapping onto a row the renderer has not reserved.
+		return fit(line, width)
 	}
 	return line + strings.Repeat(" ", gap) + hint
 }
@@ -1217,15 +1344,15 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 	}
 	switch strings.Fields(text)[0] {
 	case "/help":
-		return tea.Println(helpText()), true
+		return m.println(helpText()), true
 	case "/clear":
 		m.history = nil
-		return tea.Batch(tea.ClearScreen, tea.Println(banner(m.opts.ModelLabel, m.opts.WorkDir))), true
+		return tea.Batch(tea.ClearScreen, m.println(banner(m.opts.ModelLabel, m.opts.WorkDir))), true
 	case "/ask", "/plan", "/work":
 		mode := permission.Mode(strings.TrimPrefix(strings.Fields(text)[0], "/"))
 		m.opts.Broker.SetMode(mode)
 		m.applyMode(mode)
-		return tea.Println(renderModeChange(mode)), true
+		return m.println(renderModeChange(mode)), true
 	case "/quit", "/exit":
 		m.quitting = true
 		return tea.Quit, true
@@ -1251,7 +1378,7 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 	case "/settings":
 		return m.runFlow(m.settingsFlow), true
 	}
-	return tea.Println(styleErr.Render("  unknown command: " + text)), true
+	return m.println(styleErr.Render("  unknown command: " + text)), true
 }
 
 // runFlow launches a /model, /config, /mcp, /skill or /memory flow in its own

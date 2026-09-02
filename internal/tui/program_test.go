@@ -24,7 +24,7 @@ import (
 	"github.com/oscar1223/kiwi/internal/tools"
 )
 
-var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][AB012]|\x1b[=>]`)
+var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[()][AB012]|\x1b[=>]`)
 
 // syncBuffer is safe for the renderer goroutine and the test to share.
 type syncBuffer struct {
@@ -149,7 +149,7 @@ func runProgramOpts(t *testing.T, po programOpts) (string, *Model) {
 	}
 	inWriter.Close()
 
-	return ansi.ReplaceAllString(out.String(), ""), m
+	return ansiRE.ReplaceAllString(out.String(), ""), m
 }
 
 func TestProgramStreamsAnAnswer(t *testing.T) {

@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func sprintf(format string, args ...any) string { return fmt.Sprintf(format, args...) }
@@ -42,3 +45,64 @@ func toolSummary(name string, input []byte) string {
 }
 
 func jsonUnmarshal(data []byte, v any) error { return json.Unmarshal(data, v) }
+
+// Layout widths.
+//
+// Everything the interface draws is measured against the terminal's current
+// width. In inline mode Bubble Tea repaints the live area in place, so a line
+// wider than the window costs it a row it did not account for and the frame
+// smears — which is what a resize used to expose.
+const (
+	// fallbackWidth is used until the first WindowSizeMsg arrives, and by the
+	// tests, which never get one.
+	fallbackWidth = 80
+	// gutter is the two columns every line of output is indented by, for the
+	// "●" marker on the first line of an answer.
+	gutter = 2
+	// minWidth keeps the arithmetic below sane on a window too narrow to
+	// really use.
+	minWidth = 20
+	// fallbackTailRows caps the streaming preview when the window height is
+	// not known yet, and keeps it from taking the whole screen when it is.
+	fallbackTailRows = 12
+)
+
+// width returns the terminal width to lay out against.
+func (m *Model) termWidth() int {
+	if m.width <= 0 {
+		return fallbackWidth
+	}
+	return max(minWidth, m.width)
+}
+
+// textWidth is how wide a line of output may be: the window minus the gutter.
+func (m *Model) textWidth() int {
+	return max(minWidth-gutter, m.termWidth()-gutter)
+}
+
+// fit truncates a rendered line to width so it can never spill onto a second
+// row. Used for the rows of a list or a status line, where wrapping would
+// change how many rows the frame occupies and truncating does not.
+func fit(s string, width int) string {
+	if width <= 0 || lipgloss.Width(s) <= width {
+		return s
+	}
+	return ansi.Truncate(s, width, "…")
+}
+
+// wrapIndent wraps already-styled text to width and hangs the continuation
+// lines under the first, so a wrapped paragraph lines up with itself instead
+// of with the marker in front of it. hang pushes them in further still, to
+// clear a marker that belongs to the text — a list bullet, a quote bar.
+func wrapIndent(marker string, hang int, styled string, width int) string {
+	lines := strings.Split(ansi.Wrap(styled, max(1, width-hang), ""), "\n")
+	indent := strings.Repeat(" ", lipgloss.Width(marker)+hang)
+	for i := range lines {
+		if i == 0 {
+			lines[i] = marker + lines[i]
+			continue
+		}
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}

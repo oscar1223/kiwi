@@ -468,7 +468,7 @@ func TestStatusLineShowsContextUsage(t *testing.T) {
 	// Roughly a tenth of the 128k-token fallback window, in characters.
 	m.history = []llm.Message{{Role: llm.RoleUser, Content: strings.Repeat("x", 4*12_800)}}
 
-	got := ansi.ReplaceAllString(m.statusLine(), "")
+	got := ansiRE.ReplaceAllString(m.statusLine(), "")
 	if !strings.Contains(got, "ctx 10%") {
 		t.Errorf("status line = %q, want it to report ctx 10%%", got)
 	}
@@ -508,7 +508,7 @@ func TestContextUsageCountsTheSystemPrompt(t *testing.T) {
 // provider configured — it must explain modes, show example prompts, and
 // point at "/" now that autocomplete exists to back it up.
 func TestBannerShowsModesExamplesAndSlashHint(t *testing.T) {
-	got := ansi.ReplaceAllString(banner("fake/fake-1", "/tmp/proj"), "")
+	got := ansiRE.ReplaceAllString(banner("fake/fake-1", "/tmp/proj"), "")
 
 	for _, want := range []string{
 		"fake/fake-1", "/tmp/proj",

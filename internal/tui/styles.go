@@ -38,6 +38,14 @@ var (
 	styleDiffDel  = lipgloss.NewStyle().Foreground(colDel)
 	styleDiffHead = lipgloss.NewStyle().Foreground(colDim).Bold(true)
 	stylePrompt   = lipgloss.NewStyle().Foreground(colKiwi).Bold(true)
+
+	// Inline markdown (see markdown.go). Emphasis derives its style from the
+	// surrounding text so it inherits that text's colour; only the pieces
+	// that are markup in their own right — a heading, a list marker, a quote
+	// — get a colour of their own.
+	styleHeading = lipgloss.NewStyle().Foreground(colKiwi).Bold(true)
+	styleBullet  = lipgloss.NewStyle().Foreground(colKiwi)
+	styleQuote   = lipgloss.NewStyle().Foreground(colDim).Italic(true)
 )
 
 // Theme bundles the whole colour palette so it can be swapped as one unit.
@@ -120,6 +128,9 @@ func applyTheme(t Theme) {
 	styleDiffDel = lipgloss.NewStyle().Foreground(colDel)
 	styleDiffHead = lipgloss.NewStyle().Foreground(colDim).Bold(true)
 	stylePrompt = lipgloss.NewStyle().Foreground(colKiwi).Bold(true)
+	styleHeading = lipgloss.NewStyle().Foreground(colKiwi).Bold(true)
+	styleBullet = lipgloss.NewStyle().Foreground(colKiwi)
+	styleQuote = lipgloss.NewStyle().Foreground(colDim).Italic(true)
 }
 
 // modeStyle colours the header by what the mode permits: grey asks, blue is
