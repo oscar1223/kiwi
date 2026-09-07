@@ -46,6 +46,7 @@ func runTUI(ctx context.Context, g *globalFlags, mode permission.Mode) error {
 		SessionID:       sess.meta.ID,
 		BaseContext:     ctx,
 		Rebuild:         func() (*agent.Agent, string, error) { return sess.rebuildAgent(ctx) },
+		Todos:           sess.todos,
 		NeedsOnboarding: sess.needsOnboarding,
 	})
 

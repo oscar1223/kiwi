@@ -32,6 +32,12 @@ func toolSummary(name string, input []byte) string {
 		return oneLine(string(input), 100)
 	}
 
+	// A checklist has no single identifying argument, and dumping the array
+	// as JSON says nothing. What the reader wants is where the job is now.
+	if todos, ok := args["todos"].([]any); ok {
+		return todoSummary(todos)
+	}
+
 	// Show the argument that identifies the action for each known tool.
 	for _, key := range []string{"command", "path", "pattern", "query", "name"} {
 		if v, ok := args[key].(string); ok && v != "" {
@@ -113,4 +119,30 @@ func wrapIndent(marker string, hang int, styled string, width int) string {
 		lines[i] = indent + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// todoSummary describes a checklist in one line: the step being worked on, or
+// the tally when nothing is marked in progress.
+func todoSummary(todos []any) string {
+	done := 0
+	current := ""
+	for _, raw := range todos {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := item["content"].(string)
+		switch item["status"] {
+		case "done":
+			done++
+		case "in_progress":
+			if current == "" {
+				current = content
+			}
+		}
+	}
+	if current != "" {
+		return oneLine(sprintf("%s (%d/%d done)", current, done, len(todos)), 100)
+	}
+	return sprintf("%d steps, %d done", len(todos), done)
 }

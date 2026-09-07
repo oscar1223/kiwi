@@ -13,11 +13,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/oscar1223/kiwi/internal/agent"
+	"github.com/oscar1223/kiwi/internal/checkpoint"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/oscar1223/kiwi/internal/prompt"
 	"github.com/oscar1223/kiwi/internal/session"
 	"github.com/oscar1223/kiwi/internal/telemetry"
+	"github.com/oscar1223/kiwi/internal/tools"
 )
 
 // Options configures a TUI session.
@@ -51,6 +53,10 @@ type Options struct {
 	// report success without the agent actually changing underneath them,
 	// which is what the tests below rely on.
 	Rebuild func() (*agent.Agent, string, error)
+	// Todos is the checklist the model keeps with todo_write, so ctrl+t can
+	// draw the same list rather than a copy of it. Nil is valid: the list is
+	// then simply not shown.
+	Todos *tools.TodoList
 	// NeedsOnboarding is true when Agent is nil because no model provider is
 	// configured yet — the shape of a brand-new install. Init runs the
 	// setup wizard instead of the normal banner in that case.
@@ -123,12 +129,45 @@ type Model struct {
 	// rather than on every keystroke regardless.
 	cmdSuggestIndex int
 	lastSlashInput  string
+	// mentionIndex and lastMentionInput are the same pair for the "@" file
+	// picker. See filepicker.go.
+	mentionIndex     int
+	lastMentionInput string
 
 	// saveTokens serializes background persistence across turns: each
 	// persistTurn call takes the single token before writing and returns it
 	// after, so two turns' writes can never interleave even though neither
 	// blocks the UI. See persistTurn.
 	saveTokens chan struct{}
+
+	// checkpoints snapshots the working tree before each turn that runs, and
+	// is nil when that is not possible — no git, or a directory that is not a
+	// repository. marks is one entry per turn taken this session, oldest
+	// first; undone is what /undo has set aside for /redo. See checkpoints.go.
+	checkpoints *checkpoint.Store
+	marks       []turnMark
+	undone      []turnMark
+
+	// skillCmds caches the user-invocable skills as command entries. A nil
+	// pointer means "not loaded"; a pointer to an empty slice means "loaded,
+	// there are none" — the distinction is what stops an empty skills
+	// directory from being re-read on every keystroke.
+	skillCmds *[]commandSpec
+
+	// promptHistory recalls what was sent before, with the arrow keys and
+	// ctrl+r. See history.go.
+	promptHistory promptHistory
+
+	// queued holds messages typed while a turn was running; showTodos is
+	// whether ctrl+t has the checklist open. See shell.go.
+	queued        []string
+	showTodos     bool
+	showShortcuts bool
+
+	// fileIndex caches the "@" picker's scan of the project, so filtering on
+	// each keystroke does not re-walk the tree. See filepicker.go.
+	fileIndex   []string
+	fileIndexAt time.Time
 
 	quitting bool
 }
@@ -159,13 +198,14 @@ func New(opts Options) *Model {
 	tokens := make(chan struct{}, 1)
 	tokens <- struct{}{}
 	return &Model{
-		opts:       opts,
-		events:     ev,
-		input:      ta,
-		spinner:    sp,
-		history:    append([]llm.Message(nil), opts.History...),
-		saveTokens: tokens,
-		follow:     true,
+		opts:          opts,
+		events:        ev,
+		promptHistory: loadHistory(opts.WorkDir),
+		input:         ta,
+		spinner:       sp,
+		history:       append([]llm.Message(nil), opts.History...),
+		saveTokens:    tokens,
+		follow:        true,
 	}
 }
 
@@ -190,12 +230,13 @@ func (m *Model) Init() tea.Cmd {
 		// over immediately, the same way any other flow does — just started
 		// automatically instead of waiting for the user to type a command.
 		m.runFlow(m.onboardingFlow)
-		return tea.Batch(m.events.next(), m.input.Focus())
+		return tea.Batch(m.events.next(), m.input.Focus(), m.initCheckpoints())
 	}
 	return tea.Batch(
 		m.events.next(),
 		m.input.Focus(),
 		m.println(banner(m.opts.ModelLabel, m.opts.WorkDir)),
+		m.initCheckpoints(),
 	)
 }
 
@@ -262,13 +303,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tea.Sequence(m.flushTail(), m.println("")),
 			m.persistTurn(msg.gen, msg.messages),
 			m.events.next(),
+			m.notifyDone(),
+			// Anything typed while this turn was running goes now, as one
+			// message. It has to come after busy is cleared, or submit would
+			// queue it again.
+			m.flushQueue(),
 		)
 
 	case turnErrMsg:
 		if msg.gen != m.gen {
 			return m, m.events.next()
 		}
-		return m, tea.Batch(m.endTurn(msg.err), m.events.next())
+		// A failed turn does not send what was queued: the queue was written
+		// about work that did not happen, and the user should decide rather
+		// than have it forwarded onto an error.
+		return m, tea.Batch(m.endTurn(msg.err), m.events.next(), m.notifyDone())
 
 	case historyPersistedMsg:
 		if msg.err != nil {
@@ -349,9 +398,43 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.rebuildAgent(), m.events.next())
 
 	case agentRebuiltMsg:
+		m.forgetSkillCommands()
 		m.opts.Agent = msg.agent
 		m.opts.ModelLabel = msg.modelLabel
 		return m, tea.Batch(m.println(styleDim.Render("  reloaded: "+msg.modelLabel)), m.events.next())
+
+	case editorRequestMsg:
+		if msg.err != nil {
+			return m, m.println(styleErr.Render("  editor: " + msg.err.Error()))
+		}
+		// Trimmed here rather than only where the file is read: every editor
+		// adds a trailing newline, and this is the single point where the
+		// editor's text enters the model.
+		m.setInput(strings.TrimRight(msg.text, "\n"))
+		return m, nil
+
+	case shellResultMsg:
+		return m, m.println(renderShellResult(msg))
+
+	case reviewRequestMsg:
+		return m, m.startTurn(msg.display, msg.sent, nil, nil)
+
+	case checkpointReadyMsg:
+		return m, m.onCheckpointReady(msg)
+
+	case checkpointTakenMsg:
+		// A checkpoint from a cancelled turn is dropped the same way its
+		// output is: /undo must line up with the turns still on screen.
+		if msg.gen == m.gen {
+			m.marks = append(m.marks, msg.mark)
+			// Any redo history belongs to a timeline that no longer exists
+			// once new work lands on top of it.
+			m.undone = nil
+		}
+		return m, nil
+
+	case checkpointRestoredMsg:
+		return m, m.onCheckpointRestored(msg)
 
 	case flowDoneMsg:
 		m.flowBusy = false
@@ -392,6 +475,57 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.activeQuestion != nil {
 		return m, m.onQuestionKey(msg, key)
+	}
+	// Reverse search owns the keyboard while it is open, the same way the
+	// modals above do.
+	if cmd, handled := m.onSearchKey(msg, key); handled {
+		return m, cmd
+	}
+
+	// File picker: while a mention is being typed, the arrows browse the
+	// matches and tab or enter completes one. Same shape as the slash
+	// autocomplete below, and mutually exclusive with it — an input cannot be
+	// both "/" and a mention.
+	if paths := m.fileSuggestionsFor(); len(paths) > 0 {
+		if m.input.Value() != m.lastMentionInput {
+			m.mentionIndex = 0
+			m.lastMentionInput = m.input.Value()
+		}
+		if m.mentionIndex >= len(paths) {
+			m.mentionIndex = len(paths) - 1
+		}
+		switch key {
+		case "up":
+			if m.mentionIndex > 0 {
+				m.mentionIndex--
+			}
+			return m, nil
+		case "down":
+			if m.mentionIndex < len(paths)-1 {
+				m.mentionIndex++
+			}
+			return m, nil
+		case "tab":
+			m.completeMention(paths[m.mentionIndex])
+			m.lastMentionInput = m.input.Value()
+			return m, nil
+		case "enter":
+			// Once the mention already names a real file, enter submits.
+			// Typing the whole path by hand and pressing enter has to send
+			// the message, not silently swap in whichever match happens to
+			// be highlighted — the same rule the slash autocomplete follows
+			// for a command name typed in full.
+			if !m.mentionIsComplete() {
+				m.completeMention(paths[m.mentionIndex])
+				m.lastMentionInput = m.input.Value()
+				return m, nil
+			}
+		case "esc":
+			// Dismiss the picker without touching the draft: the mention is
+			// finished, the user just does not want the list any more.
+			m.setInput(m.input.Value() + " ")
+			return m, nil
+		}
 	}
 
 	// Slash-command autocomplete: while the input is "/" plus an unfinished
@@ -455,6 +589,13 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// translates it into bare arrows (alternate scroll). They only reach
 		// the transcript when the input cannot use them itself, so a
 		// multi-line prompt still navigates its own text.
+		//
+		// Recall comes first: an arrow at a single-line prompt is far more
+		// often "give me back what I typed before" than "scroll up one row",
+		// and shift+up/down and pgup/pgdn above still scroll unambiguously.
+		if m.wantsHistory(key) {
+			return m, m.recallPrompt(key == "up")
+		}
 		if !m.inputWantsArrow(key) {
 			if key == "up" {
 				m.scrollBy(-1)
@@ -473,6 +614,11 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 
+	case "ctrl+r":
+		if !m.busy && !m.flowBusy {
+			return m, m.startSearch()
+		}
+
 	case "ctrl+d":
 		if m.input.Value() == "" {
 			m.quitting = true
@@ -480,6 +626,10 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
+		if len(m.queued) > 0 {
+			m.queued = nil
+			return m, m.println(styleDim.Render("  queued messages discarded"))
+		}
 		if m.busy {
 			return m, m.cancelTurn()
 		}
@@ -497,8 +647,24 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.applyMode(next)
 		return m, m.println(renderModeChange(next))
 
+	case "ctrl+t":
+		return m, m.toggleTodos()
+
+	case "?":
+		// Only on an empty prompt: "?" is an ordinary character the rest of
+		// the time, and stealing it would make the input unusable for
+		// questions.
+		if m.input.Value() == "" {
+			return m, m.toggleShortcuts()
+		}
+
+	case "ctrl+e":
+		if !m.busy && !m.flowBusy {
+			return m, m.composeInEditor()
+		}
+
 	case "enter":
-		if m.busy || m.flowBusy || m.opts.Agent == nil {
+		if m.flowBusy || m.opts.Agent == nil {
 			return m, nil
 		}
 		text := strings.TrimSpace(m.input.Value())
@@ -506,15 +672,32 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.Reset()
+		m.promptHistory.reset()
+		if m.busy {
+			// Typed while the model is working. It used to be dropped in
+			// silence, which is the worst of the options available.
+			return m, m.enqueue(text)
+		}
+		if strings.HasPrefix(text, "!") {
+			return m, m.shellCommand(text)
+		}
+		m.promptHistory.record(text)
 		return m, m.submit(text)
 	}
 
 	var cmd tea.Cmd
+	before := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
+	// Editing a recalled prompt makes it the draft. Without this, the down
+	// arrow after an edit would restore the stashed draft over the top of
+	// what was just typed.
+	if m.input.Value() != before {
+		m.promptHistory.pos = len(m.promptHistory.entries)
+	}
 	return m, cmd
 }
 
-// submit starts a new turn.
+// submit starts a new turn from what the user typed.
 func (m *Model) submit(text string) tea.Cmd {
 	// Sending something is a statement that you want to see what comes back,
 	// so it always returns to the newest output — whether it runs a command
@@ -525,6 +708,21 @@ func (m *Model) submit(text string) tea.Cmd {
 		return cmd
 	}
 
+	// The model gets the file contents; the transcript keeps what the user
+	// actually typed, so the transcript stays readable no matter how much was
+	// attached.
+	sent, attached, missing := expandFileMentions(m.opts.WorkDir, text)
+	return m.startTurn(text, sent, attached, missing)
+}
+
+// startTurn runs one turn, showing display in the transcript while sending
+// sent to the model.
+//
+// The two are separate because they diverge in both directions: an @mention
+// sends far more than it shows, and a command like /init shows two words while
+// sending a page of instructions. Collapsing them would make one of those
+// unreadable.
+func (m *Model) startTurn(display, sent string, attached, missing []string) tea.Cmd {
 	m.gen++
 	gen := m.gen
 	m.busy = true
@@ -541,15 +739,18 @@ func (m *Model) submit(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(base)
 	m.cancel = cancel
 
-	// The model gets the file contents; the transcript keeps what the user
-	// actually typed, so the transcript stays readable no matter how much was
-	// attached.
-	sent, attached, missing := expandFileMentions(m.opts.WorkDir, text)
-
 	history := append([]llm.Message(nil), m.history...)
-	go runTurn(ctx, m.opts.Agent, gen, sent, history, m.events)
+	// The checkpoint has to land before the agent's first edit, so it runs at
+	// the head of the turn's goroutine rather than alongside it. Everything it
+	// needs was captured on this goroutine; see snapshotFn.
+	snapshot := m.snapshotFn(gen, display)
+	agentRef, events := m.opts.Agent, m.events
+	go func() {
+		snapshot(ctx)
+		runTurn(ctx, agentRef, gen, sent, history, events)
+	}()
 
-	lines := []string{bullet(styleUser.Render(">"), styleUser.Render(text))}
+	lines := []string{bullet(styleUser.Render(">"), styleUser.Render(display))}
 	if len(attached) > 0 {
 		lines = append(lines, styleDim.Render("  attached "+strings.Join(attached, ", ")))
 	}
@@ -985,6 +1186,9 @@ func (m *Model) applyMode(mode permission.Mode) {
 	opts := m.opts.PromptOptions
 	opts.ModeInstructions = mode.Instructions()
 	m.opts.Agent.System = prompt.Build(opts)
+	// The budget follows the mode: switching into Work mid-session is a
+	// statement that the turn should be allowed to run long.
+	m.opts.Agent.MaxSteps = mode.MaxSteps()
 }
 
 func (m *Model) View() tea.View {
@@ -1069,10 +1273,17 @@ func (m *Model) bottomBlock(width int) (rows []string, cursorRow, cursorCol int)
 		rows = append(rows, splitRows(renderQuestion(m.activeQuestion, width))...)
 		cursorRow, cursorCol = len(rows)-1, gutter
 	default:
+		rows = append(rows, m.renderShortcuts(width)...)
+		rows = append(rows, m.renderTodos(width)...)
 		rows = append(rows, styleDim.Render(strings.Repeat("─", width)))
 		cursorRow, cursorCol = len(rows), lipgloss.Width(promptMarker)
 		rows = append(rows, splitRows(stylePrompt.Render(promptMarker)+m.input.View())...)
-		if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
+		rows = append(rows, m.renderQueued(width)...)
+		if line := m.searchLine(); line != "" {
+			rows = append(rows, splitRows(line)...)
+		} else if paths := m.fileSuggestionsFor(); len(paths) > 0 {
+			rows = append(rows, splitRows(renderFileSuggestions(paths, m.mentionIndex, width))...)
+		} else if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
 			rows = append(rows, splitRows(renderSlashSuggestions(suggestions, m.cmdSuggestIndex, width))...)
 		}
 	}
@@ -1409,7 +1620,7 @@ func modeHint(mode permission.Mode) string {
 	case permission.ModePlan:
 		return "read-only; edits blocked"
 	case permission.ModeWork:
-		return "edits and safe commands apply without asking"
+		return "edits, safe commands and MCP apply without asking"
 	default:
 		return "every action is confirmed"
 	}
@@ -1463,6 +1674,14 @@ var commandRegistry = []commandSpec{
 	{"/theme", "switch the colour theme"},
 	{"/sessions", "switch between saved conversations"},
 	{"/memory", "view or edit what kiwi remembers"},
+	{"/init", "write or refresh the project instructions file"},
+	{"/status", "everything about this session in one place"},
+	{"/context", "what is filling the context window"},
+	{"/tools", "list tools, or switch one off for this session"},
+	{"/review", "review the current changes with a separate agent"},
+	{"/undo", "undo the last turn — files and conversation"},
+	{"/redo", "redo what /undo took away"},
+	{"/diff", "show what changed this session (/diff turn for the last one)"},
 	{"/compact", "summarize the conversation to free up context"},
 	{"/clear", "forget the conversation"},
 	{"/help", "show this list"},
@@ -1473,12 +1692,18 @@ var commandRegistry = []commandSpec{
 // substring (case-insensitive), or every entry when q is empty — so typing
 // bare "/" shows the full list, narrowing as more is typed.
 func filterCommands(q string) []commandSpec {
+	return filterAmong(commandRegistry, q)
+}
+
+// filterAmong is filterCommands over an arbitrary list, so the autocomplete can
+// include user-invocable skills without them leaking into the static registry.
+func filterAmong(list []commandSpec, q string) []commandSpec {
 	q = strings.ToLower(strings.TrimPrefix(q, "/"))
 	if q == "" {
-		return commandRegistry
+		return list
 	}
 	var out []commandSpec
-	for _, c := range commandRegistry {
+	for _, c := range list {
 		if strings.Contains(strings.ToLower(strings.TrimPrefix(c.Name, "/")), q) {
 			out = append(out, c)
 		}
@@ -1508,11 +1733,14 @@ func (m *Model) slashSuggestions() []commandSpec {
 	if m.pending != nil || m.activePick != nil || m.activeText != nil || m.activeQuestion != nil {
 		return nil
 	}
+	if m.promptHistory.search != nil {
+		return nil
+	}
 	v := m.input.Value()
 	if !strings.HasPrefix(v, "/") || strings.ContainsAny(v, " \n") {
 		return nil
 	}
-	return filterCommands(v)
+	return filterAmong(append(append([]commandSpec(nil), commandRegistry...), m.skillCommands()...), v)
 }
 
 func (m *Model) command(text string) (tea.Cmd, bool) {
@@ -1521,7 +1749,7 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 	}
 	switch strings.Fields(text)[0] {
 	case "/help":
-		return m.println(helpText()), true
+		return m.println(helpText(m.skillCommands()...)), true
 	case "/clear":
 		m.history = nil
 		m.transcript.reset()
@@ -1556,6 +1784,35 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 		return m.runFlow(func(ctx context.Context) { m.memoryFlow(ctx, snapshot) }), true
 	case "/settings":
 		return m.runFlow(m.settingsFlow), true
+	case "/review":
+		st := m.checkpointState()
+		args := strings.Join(strings.Fields(text)[1:], " ")
+		return m.runFlow(func(ctx context.Context) { m.reviewFlow(ctx, st, args) }), true
+	case "/undo":
+		st := m.checkpointState()
+		return m.runFlow(func(ctx context.Context) { m.undoFlow(ctx, st) }), true
+	case "/redo":
+		st := m.checkpointState()
+		return m.runFlow(func(ctx context.Context) { m.redoFlow(ctx, st) }), true
+	case "/init":
+		return m.initFlow(), true
+	case "/context":
+		return m.contextFlow(), true
+	case "/tools":
+		return m.runFlow(m.toolsFlow), true
+	case "/status":
+		st := m.checkpointState()
+		return m.runFlow(func(ctx context.Context) { m.statusFlow(ctx, st) }), true
+	case "/diff":
+		st := m.checkpointState()
+		arg := strings.Join(strings.Fields(text)[1:], " ")
+		return m.runFlow(func(ctx context.Context) { m.diffFlow(ctx, st, arg) }), true
+	}
+
+	// Not one of Kiwi's own: a user-invocable skill may still claim it.
+	fields := strings.Fields(text)
+	if cmd, ok := m.skillCommand(strings.TrimPrefix(fields[0], "/"), strings.Join(fields[1:], " ")); ok {
+		return cmd, true
 	}
 	return m.println(styleErr.Render("  unknown command: " + text)), true
 }
@@ -1624,15 +1881,22 @@ func (m *Model) applyRebuild(ctx context.Context) {
 // themselves, so that list and the "/" autocomplete can never drift apart.
 var keybindRows = [][2]string{
 	{"/ (typing)", "autocomplete commands as you type"},
+	{"↑ ↓", "recall an earlier prompt"},
+	{"ctrl+r", "search earlier prompts"},
+	{"ctrl+t", "show or hide the task list"},
+	{"!command", "run a shell command without a turn"},
+	{"ctrl+e", "compose the prompt in $EDITOR"},
+	{"@", "pick a file to attach"},
+	{"?", "show or hide this panel"},
 	{"shift+tab", "cycle mode"},
 	{"↑↓ enter esc", "navigate a menu"},
 	{"esc", "cancel the running turn"},
 	{"ctrl+c", "cancel, or exit when idle"},
 }
 
-func helpText() string {
+func helpText(extra ...commandSpec) string {
 	var b strings.Builder
-	for _, c := range commandRegistry {
+	for _, c := range append(append([]commandSpec(nil), commandRegistry...), extra...) {
 		fmt.Fprintf(&b, "  %s  %s\n",
 			styleTool.Render(fmt.Sprintf("%-18s", c.Name)),
 			styleDim.Render(c.Desc))

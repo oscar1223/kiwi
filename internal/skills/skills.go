@@ -24,6 +24,15 @@ type Skill struct {
 	Name        string
 	Description string
 	Body        string
+	// UserInvocable makes the skill available as a slash command, on top of
+	// being loadable by the model. It is opt-in because the two audiences are
+	// different: a skill the model should reach for when a task matches is not
+	// necessarily one a person wants taking up a row in their command list.
+	UserInvocable bool
+	// Builtin marks a skill that ships with Kiwi rather than one the user
+	// wrote. It only affects how the skill is presented — nothing about a
+	// built-in skill is protected, and editing one makes it the user's.
+	Builtin bool
 }
 
 // ErrNotFound is returned when a named skill does not exist.
@@ -55,6 +64,7 @@ func Load() (map[string]Skill, error) {
 		return nil, err
 	}
 
+	builtin := BuiltinNames()
 	out := map[string]Skill{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
@@ -66,6 +76,7 @@ func Load() (map[string]Skill, error) {
 		}
 		fallback := strings.TrimSuffix(e.Name(), ".md")
 		if sk, ok := parse(string(data), fallback); ok {
+			sk.Builtin = builtin[fallback]
 			out[sk.Name] = sk
 		}
 	}
@@ -99,9 +110,23 @@ func parse(raw, fallbackName string) (Skill, bool) {
 			}
 		case "description":
 			sk.Description = value
+		case "user-invocable", "user_invocable":
+			sk.UserInvocable = value == "true" || value == "yes"
 		}
 	}
 	return sk, true
+}
+
+// Invocable returns the user-invocable skills by name, for the command list.
+func Invocable(sk map[string]Skill) []Skill {
+	var out []Skill
+	for _, s := range sk {
+		if s.UserInvocable {
+			out = append(out, s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Save creates or overwrites a skill file.

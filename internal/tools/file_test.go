@@ -271,3 +271,144 @@ type deciderFunc func(context.Context, *permission.Request) (bool, error)
 func (f deciderFunc) Decide(ctx context.Context, r *permission.Request) (bool, error) {
 	return f(ctx, r)
 }
+
+// multiEditFS returns a filesystem in Work mode (so edits apply without a
+// decider) holding one file with the given contents.
+func multiEditFS(t *testing.T, body string) (*FS, string) {
+	t.Helper()
+	fs := newFS(t, permission.ModeWork, nil)
+	abs := filepath.Join(fs.WorkDir, "f.txt")
+	if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fs, abs
+}
+
+func TestMultiEditAppliesEveryEditInOrder(t *testing.T) {
+	fs, abs := multiEditFS(t, "uno\ndos\ntres\n")
+
+	if _, err := call(t, MultiEdit{fs}, map[string]any{
+		"path": "f.txt",
+		"edits": []map[string]any{
+			{"old_string": "uno", "new_string": "one"},
+			{"old_string": "dos", "new_string": "two"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "one\ntwo\ntres\n"; string(got) != want {
+		t.Errorf("file = %q, want %q", got, want)
+	}
+}
+
+// Each edit sees what the previous one produced, so an edit may act on text an
+// earlier edit created.
+func TestMultiEditChainsEdits(t *testing.T) {
+	fs, abs := multiEditFS(t, "a\n")
+
+	if _, err := call(t, MultiEdit{fs}, map[string]any{
+		"path": "f.txt",
+		"edits": []map[string]any{
+			{"old_string": "a", "new_string": "b"},
+			{"old_string": "b", "new_string": "c"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, _ := os.ReadFile(abs)
+	if string(got) != "c\n" {
+		t.Errorf("edits did not chain: %q", got)
+	}
+}
+
+// The whole reason multi_edit exists as its own tool: a batch that fails
+// partway must leave the file exactly as it was.
+func TestMultiEditWritesNothingWhenAnEditFails(t *testing.T) {
+	const original = "uno\ndos\ntres\n"
+	fs, abs := multiEditFS(t, original)
+
+	_, err := call(t, MultiEdit{fs}, map[string]any{
+		"path": "f.txt",
+		"edits": []map[string]any{
+			{"old_string": "uno", "new_string": "one"},
+			{"old_string": "NO EXISTE", "new_string": "x"},
+		},
+	})
+	if err == nil {
+		t.Fatal("an edit against text that is not there was accepted")
+	}
+	if !strings.Contains(err.Error(), "nothing was written") {
+		t.Errorf("the error does not say the file was left alone: %v", err)
+	}
+
+	got, _ := os.ReadFile(abs)
+	if string(got) != original {
+		t.Errorf("a failed batch modified the file:\n got %q\nwant %q", got, original)
+	}
+}
+
+func TestMultiEditRequiresAUniqueMatch(t *testing.T) {
+	const original = "x\nx\n"
+	fs, abs := multiEditFS(t, original)
+
+	if _, err := call(t, MultiEdit{fs}, map[string]any{
+		"path":  "f.txt",
+		"edits": []map[string]any{{"old_string": "x", "new_string": "y"}},
+	}); err == nil {
+		t.Fatal("an ambiguous match was accepted")
+	}
+	if got, _ := os.ReadFile(abs); string(got) != original {
+		t.Errorf("the file was touched despite the error: %q", got)
+	}
+
+	// replace_all is the escape hatch.
+	if _, err := call(t, MultiEdit{fs}, map[string]any{
+		"path":  "f.txt",
+		"edits": []map[string]any{{"old_string": "x", "new_string": "y", "replace_all": true}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(abs); string(got) != "y\ny\n" {
+		t.Errorf("replace_all did not replace every occurrence: %q", got)
+	}
+}
+
+func TestMultiEditRejectsAnEmptyBatch(t *testing.T) {
+	fs, _ := multiEditFS(t, "a\n")
+
+	if _, err := call(t, MultiEdit{fs}, map[string]any{
+		"path": "f.txt", "edits": []map[string]any{},
+	}); err == nil {
+		t.Error("an empty batch was accepted")
+	}
+}
+
+// A denied batch must not write either — the permission answer is about the
+// whole thing.
+func TestMultiEditRespectsADenial(t *testing.T) {
+	const original = "uno\n"
+	deny := deciderFunc(func(context.Context, *permission.Request) (bool, error) {
+		return false, nil
+	})
+	fs := newFS(t, permission.ModeAsk, deny)
+	abs := filepath.Join(fs.WorkDir, "f.txt")
+	if err := os.WriteFile(abs, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := call(t, MultiEdit{fs}, map[string]any{
+		"path":  "f.txt",
+		"edits": []map[string]any{{"old_string": "uno", "new_string": "one"}},
+	}); err == nil {
+		t.Fatal("a denied edit was applied")
+	}
+	if got, _ := os.ReadFile(abs); string(got) != original {
+		t.Errorf("a denied edit changed the file: %q", got)
+	}
+}

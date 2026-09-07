@@ -29,7 +29,8 @@ func TestResolvePolicyTable(t *testing.T) {
 		{ModeWork, Action{Name: ActionEdit}, true, true, "work auto-approves edits"},
 		{ModeWork, Action{Name: ActionBash, Detail: "npm test"}, true, true, "work auto-approves safe commands"},
 		{ModeWork, Action{Name: ActionBash, Detail: "rm -rf /"}, false, false, "work still asks for dangerous commands"},
-		{ModeWork, Action{Name: "mcp:x/y"}, false, false, "work still asks for MCP"},
+		{ModeWork, Action{Name: "mcp:x/y"}, true, true, "work runs MCP tools unattended"},
+		{ModeAsk, Action{Name: "mcp:x/y"}, false, false, "ask still confirms MCP"},
 
 		// Ask mode never decides on its own.
 		{ModeAsk, Action{Name: ActionWrite}, false, false, "ask always prompts"},
@@ -238,3 +239,20 @@ func TestRequestAnswerIsIdempotent(t *testing.T) {
 type deciderFunc func(context.Context, *Request) (bool, error)
 
 func (f deciderFunc) Decide(ctx context.Context, r *Request) (bool, error) { return f(ctx, r) }
+
+// Work mode is where unattended work happens, so it gets a bigger budget. The
+// limit still exists in every mode: it is the circuit breaker against a model
+// looping on itself.
+func TestMaxStepsIsLargerInWorkMode(t *testing.T) {
+	work := ModeWork.MaxSteps()
+	for _, m := range []Mode{ModeAsk, ModePlan} {
+		if m.MaxSteps() >= work {
+			t.Errorf("%s allows %d steps, work allows %d", m, m.MaxSteps(), work)
+		}
+	}
+	for _, m := range Order {
+		if m.MaxSteps() <= 0 {
+			t.Errorf("%s has no step limit at all", m)
+		}
+	}
+}

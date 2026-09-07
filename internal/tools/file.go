@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/oscar1223/kiwi/internal/diagnostics"
 	"github.com/oscar1223/kiwi/internal/permission"
 )
 
@@ -19,6 +20,22 @@ const MaxFileBytes = 256 * 1024
 type FS struct {
 	WorkDir string
 	Perms   *permission.Broker
+	// Diag checks what was just written against the project's own tooling and
+	// appends anything it finds to the observation. Nil turns that off, which
+	// is what the tests below and any non-project working directory use.
+	Diag *diagnostics.Runner
+}
+
+// checked appends the project checker's verdict on abs to a tool's result.
+//
+// Reporting it in the same observation rather than as a separate turn is the
+// whole point: the model is already reading this text, and a compile error it
+// learns about three tool calls later is one it has already built on top of.
+func (f *FS) checked(ctx context.Context, result string, abs ...string) string {
+	if f.Diag == nil {
+		return result
+	}
+	return result + f.Diag.Check(ctx, abs...)
 }
 
 // resolve turns a user- or model-supplied path into an absolute one.
@@ -193,7 +210,7 @@ func (t WriteFile) Run(ctx context.Context, input json.RawMessage) (string, erro
 	if exists {
 		verb = "Overwrote"
 	}
-	return fmt.Sprintf("%s %s (%d lines)", verb, t.display(abs), countLines(in.Content)), nil
+	return t.checked(ctx, fmt.Sprintf("%s %s (%d lines)", verb, t.display(abs), countLines(in.Content)), abs), nil
 }
 
 // --- edit_file ---
@@ -273,9 +290,9 @@ func (t EditFile) Run(ctx context.Context, input json.RawMessage) (string, error
 	}
 
 	if count > 1 {
-		return fmt.Sprintf("Edited %s (%d replacements)", t.display(abs), count), nil
+		return t.checked(ctx, fmt.Sprintf("Edited %s (%d replacements)", t.display(abs), count), abs), nil
 	}
-	return fmt.Sprintf("Edited %s", t.display(abs)), nil
+	return t.checked(ctx, fmt.Sprintf("Edited %s", t.display(abs)), abs), nil
 }
 
 func countLines(s string) int {
@@ -283,4 +300,126 @@ func countLines(s string) int {
 		return 0
 	}
 	return strings.Count(strings.TrimSuffix(s, "\n"), "\n") + 1
+}
+
+// --- multi_edit ---
+
+// maxEditsPerCall bounds one multi_edit. Past this it is a rewrite, and
+// write_file says so more honestly.
+const maxEditsPerCall = 50
+
+// MultiEdit applies several replacements to one file in a single call.
+//
+// The edits are applied in order against an in-memory copy and only written
+// once every one of them has succeeded. That atomicity is the point: a batch
+// that failed halfway would leave the file in a state neither the model nor
+// the user asked for, and the model would then be reasoning about a file it
+// no longer understands.
+type MultiEdit struct{ *FS }
+
+func (MultiEdit) Name() string { return "multi_edit" }
+
+func (MultiEdit) Description() string {
+	return "Apply several exact-string replacements to one file in a single call. " +
+		"Edits apply in order, each seeing the result of the previous one, and " +
+		"either all of them succeed or the file is left untouched. Prefer this " +
+		"over repeated edit_file calls on the same file."
+}
+
+func (MultiEdit) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string", "description": "Path to the file."},
+			"edits": map[string]any{
+				"type":        "array",
+				"description": "Replacements, applied in order.",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"old_string":  map[string]any{"type": "string", "description": "Exact text to replace, including indentation."},
+						"new_string":  map[string]any{"type": "string", "description": "Replacement text."},
+						"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match."},
+					},
+					"required": []string{"old_string", "new_string"},
+				},
+			},
+		},
+		"required": []string{"path", "edits"},
+	}
+}
+
+func (t MultiEdit) Run(ctx context.Context, input json.RawMessage) (string, error) {
+	var in struct {
+		Path  string `json:"path"`
+		Edits []struct {
+			OldString  string `json:"old_string"`
+			NewString  string `json:"new_string"`
+			ReplaceAll bool   `json:"replace_all"`
+		} `json:"edits"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return "", err
+	}
+	if len(in.Edits) == 0 {
+		return "", fmt.Errorf("edits is empty; nothing to do")
+	}
+	if len(in.Edits) > maxEditsPerCall {
+		return "", fmt.Errorf("%d edits is too many (max %d); rewrite the file with write_file instead", len(in.Edits), maxEditsPerCall)
+	}
+	abs, err := t.resolve(in.Path)
+	if err != nil {
+		return "", err
+	}
+
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	before := string(data)
+
+	after := before
+	replacements := 0
+	for i, e := range in.Edits {
+		if e.OldString == e.NewString {
+			return "", fmt.Errorf("edit %d: old_string and new_string are identical", i+1)
+		}
+		// Counted against the running result, not the original: an edit is
+		// allowed to act on what an earlier one produced, and reporting a
+		// match that a previous edit has already consumed would be a lie.
+		count := strings.Count(after, e.OldString)
+		switch {
+		case count == 0:
+			return "", fmt.Errorf("edit %d: old_string not found in %s (nothing was written)", i+1, t.display(abs))
+		case count > 1 && !e.ReplaceAll:
+			return "", fmt.Errorf("edit %d: old_string appears %d times in %s; add surrounding context to make it unique, or set replace_all (nothing was written)",
+				i+1, count, t.display(abs))
+		}
+		if e.ReplaceAll {
+			after = strings.ReplaceAll(after, e.OldString, e.NewString)
+			replacements += count
+			continue
+		}
+		after = strings.Replace(after, e.OldString, e.NewString, 1)
+		replacements++
+	}
+
+	if after == before {
+		return fmt.Sprintf("%s is unchanged", t.display(abs)), nil
+	}
+
+	// One prompt for the batch, showing the combined diff: approving each
+	// replacement separately would tell the user less, not more.
+	if err := t.Perms.Ask(ctx, permission.Action{
+		Name:   permission.ActionEdit,
+		Detail: fmt.Sprintf("edit %s (%d changes)", t.display(abs), len(in.Edits)),
+		Diff:   UnifiedDiff(t.display(abs), before, after),
+	}); err != nil {
+		return "", err
+	}
+
+	if err := os.WriteFile(abs, []byte(after), 0o644); err != nil {
+		return "", err
+	}
+	return t.checked(ctx, fmt.Sprintf("Edited %s (%d edits, %d replacements)", t.display(abs), len(in.Edits), replacements), abs), nil
 }

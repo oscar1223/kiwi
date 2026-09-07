@@ -38,7 +38,7 @@ confirmación:
 |--------|-----------------------------------------------|
 | `ask`  | confirma cada acción antes de ejecutarla (por defecto) |
 | `plan` | solo lectura — no puede editar ni ejecutar comandos |
-| `work` | aplica ediciones y comandos automáticamente; solo pregunta ante comandos peligrosos (rm -rf, sudo, force push, ...) o herramientas MCP |
+| `work` | aplica ediciones, comandos y herramientas MCP automáticamente; solo pregunta ante comandos peligrosos (rm -rf, sudo, force push, ...) |
 
 Se eligen con `--mode` al arrancar, se cambian en caliente con `/ask` `/plan` `/work`, o
 ciclando con `shift+tab`.
@@ -50,6 +50,14 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
 
 | Comando      | Qué hace                                            |
 |--------------|------------------------------------------------------|
+| `/init`      | escribe o actualiza `KIWI.md` leyendo el proyecto antes |
+| `/status`    | todo lo de esta sesión en una pantalla                 |
+| `/context`   | qué está llenando la ventana de contexto               |
+| `/tools`     | lista las tools, o apaga una para esta sesión          |
+| `/undo`      | deshace el último turno: ficheros y conversación       |
+| `/redo`      | rehace lo que `/undo` quitó                            |
+| `/diff`      | qué ha cambiado en la sesión (`/diff turn`, el último) |
+| `/review`    | revisa los cambios actuales con un agente aparte       |
 | `/settings`  | menú agrupado con todo lo de abajo                    |
 | `/model`     | cambia o gestiona perfiles de modelo                  |
 | `/config`    | gestiona variables de `.env`                          |
@@ -67,6 +75,19 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
 
 - `read_file` / `write_file` / `edit_file` — lectura y edición del sistema de archivos,
   con diff antes de aplicar.
+- `multi_edit` — varias sustituciones sobre un mismo fichero en una llamada. O se
+  aplican todas o no se toca el fichero: un lote que fallara a medias dejaría el
+  fichero en un estado que nadie pidió.
+- `grep` / `glob` / `ls` — búsqueda por contenido, por nombre y listado de un
+  directorio. No piden permiso (como `read_file`) y saltan solas `.git`,
+  `node_modules` y compañía. Preferibles a llamar a `grep` o `find` por `bash`:
+  no dependen de qué binarios haya instalados.
+- `todo_write` / `todo_read` — la lista de tareas del trabajo en curso. Es lo que
+  mantiene el rumbo en tareas largas, y de paso te enseña por dónde va.
+- `web_fetch` — lee una URL y devuelve el texto, con el HTML ya limpio. Rechaza
+  direcciones de loopback, privadas y link-local —incluida `169.254.169.254`, la de
+  metadatos de las nubes— y lo comprueba al abrir la conexión, así que una
+  redirección hacia dentro tampoco cuela. Libre en `plan` y `work`, pregunta en `ask`.
 - `bash` — ejecuta comandos; en segundo plano con `background_bash` /
   `background_output` / `kill_shell` para procesos de larga duración.
 - `task` — lanza subagentes para investigación o trabajo en paralelo.
@@ -197,3 +218,108 @@ go test ./... -race
 ## Licencia
 
 MIT — ver [LICENSE](LICENSE).
+
+## Deshacer
+
+Antes de cada turno que puede escribir, kiwi hace una **instantánea del árbol de
+trabajo**. `/undo` la restaura —los ficheros *y* la conversación, porque devolver
+los ficheros y dejar al modelo convencido de una edición que ya no existe es peor
+que no deshacer nada— y `/redo` la vuelve a aplicar. `/diff` enseña lo acumulado
+desde que arrancó la sesión.
+
+Las instantáneas viven en un repositorio git **propio de kiwi**, bajo
+`~/.config/kiwi/checkpoints/`, apuntado al proyecto con `GIT_WORK_TREE`. Tu
+índice, tu stash, tus hooks y tu historial no se tocan en ningún momento: kiwi
+nunca nombra tu `.git`. Hace falta que el proyecto sea un repositorio git —no por
+el repo sombra, sino porque `.gitignore` es lo que impide que una instantánea se
+trague `node_modules`—; donde no lo sea, kiwi lo dice una vez al arrancar y sigue
+sin red.
+
+Esto importa sobre todo en **work mode**, que aplica ediciones y comandos sin
+preguntar: es la marcha atrás que sustituye a la confirmación que ya no hay.
+
+## Diagnósticos y LSP
+
+Después de cada `write_file`, `edit_file` o `multi_edit`, kiwi pasa **el
+verificador del propio proyecto** por el paquete tocado —`go vet` con `go.mod`,
+`tsc --noEmit` con `tsconfig.json`, `ruff` con `pyproject.toml`— y añade lo que
+encuentre a la misma observación que lee el modelo. Así se entera de que ha roto
+la compilación ahí mismo, no tres llamadas después, cuando ya ha construido
+encima. Se puede sustituir con `KIWI_DIAGNOSTICS_CMD` (un `{}` en el comando
+marca dónde va la ruta; si no lo hay, se añade al final).
+
+Dos reglas lo mantienen fuera del terreno del ruido: solo se reportan problemas
+**en los ficheros que se acaban de editar**, y **no se repite lo ya dicho**. Un
+canal de diagnósticos que grita en cada edición se acaba ignorando entero.
+
+Si hay un **language server** instalado y el proyecto es de ese lenguaje —`gopls`,
+`typescript-language-server`, `pyright`, `rust-analyzer`—, kiwi registra además la
+tool `lsp` con tres operaciones: `definition`, `references` y `diagnostics`. El
+servidor arranca la primera vez que se pregunta, no al abrir kiwi, porque indexar
+un módulo entero es caro y la mayoría de las sesiones no lo necesitan.
+
+Justifica su sitio en la única pregunta que `grep` no puede responder con
+honestidad: **cuál de estas coincidencias es el mismo símbolo**. `grep` encuentra
+un nombre; el servidor lo resuelve. Se configura con `KIWI_LSP`
+(`.go=gopls;.rb=solargraph --stdio`), y si no hay servidor la tool no se registra
+—una herramienta que el modelo ve pero que solo puede fallar es peor que ninguna.
+
+## Skills
+
+kiwi trae **seis skills instaladas de fábrica**, embebidas en el binario y
+sembradas en `~/.config/kiwi/skills/` la primera vez que arranca — sin eso, un
+`go install` recién hecho dejaría el directorio vacío y "prefabricadas" no
+querría decir nada.
+
+| Skill | Para qué |
+| --- | --- |
+| `plan` | escribe un `PLAN-*.md`: contexto, decisiones con su porqué, partes ancladas a `fichero.go:línea`, orden y verificación |
+| `commit` | mensaje desde el diff staged, comprobando primero **en qué repositorio estás** |
+| `code-review` | revisa el cambio: primero corrección, luego reutilización y simplificación |
+| `init` | escribe `KIWI.md` leyendo el proyecto antes |
+| `security-review` | inyección, secretos, autorización, SSRF, travesía de rutas, defaults inseguros |
+| `test` | encuentra los comandos reales de *este* repo, los corre y lee los fallos |
+
+**Nunca se pisa lo que hayas tocado.** Una skill solo se refresca si lo que hay
+en disco es byte a byte la versión que kiwi escribió por última vez, que es
+justo el caso en el que no se puede perder nada. Y si borras una, no vuelve:
+borrarla también es una decisión.
+
+### Skills como comandos
+
+Una skill con `user-invocable: true` en su frontmatter **se convierte en un slash
+command**: aparece en el autocompletado y en `/help`, y `/plan lo que sea` lanza
+un turno con sus instrucciones y con tu texto añadido. Los comandos nativos de
+kiwi siempre ganan — una skill llamada `clear` no puede secuestrar `/clear`.
+
+## Teclado
+
+| Tecla | Qué hace |
+| --- | --- |
+| `↑` `↓` | recupera un prompt anterior (con el input vacío o a medias; un borrador multilínea se queda sus flechas) |
+| `ctrl+r` | busca entre los prompts anteriores |
+| `@` | selector difuso de ficheros — `@tumod` encuentra `internal/tui/model.go` |
+| `!comando` | ejecuta en la shell sin gastar un turno |
+| `ctrl+t` | muestra u oculta la lista de tareas del modelo |
+| `ctrl+e` | redacta el prompt en `$EDITOR` |
+| `?` | panel de atajos, con el input vacío |
+| `shift+tab` | cicla de modo |
+| `esc` | descarta la cola, o cancela el turno |
+
+El **historial es por directorio de trabajo** (`~/.local/share/kiwi/history/`):
+los prompts de un proyecto son ruido en otro.
+
+**Escribir durante un turno encola** en vez de perderse. Todo lo encolado se
+manda junto al terminar, como un solo mensaje: tres cosas que se te ocurren
+viendo el mismo trabajo son una sola pieza de feedback, no tres turnos. `esc` la
+descarta. Si el turno falla, la cola **no** se envía —estaba escrita sobre un
+trabajo que no llegó a pasar, y esa decisión es tuya.
+
+Al acabar un turno de más de 20 segundos **suena la campana del terminal**. Con
+work mode desatendido eso deja de ser adorno: es cómo sabes que puedes volver.
+`KIWI_NOTIFY=desktop` añade notificación de escritorio; `KIWI_NOTIFY=off` calla
+del todo.
+
+`!` respeta el modo: en plan mode un comando que escriba se rechaza, igual que
+haría la tool. Un modo de solo lectura del que te puedas escapar tecleando `!`
+no es una promesa que merezca la pena hacer.

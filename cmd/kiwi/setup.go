@@ -10,6 +10,7 @@ import (
 	"github.com/oscar1223/kiwi/internal/agent"
 	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
+	"github.com/oscar1223/kiwi/internal/lsp"
 	"github.com/oscar1223/kiwi/internal/mcp"
 	"github.com/oscar1223/kiwi/internal/memory"
 	"github.com/oscar1223/kiwi/internal/permission"
@@ -53,14 +54,24 @@ type runSession struct {
 	// its onboarding wizard instead of the normal banner, and the wizard's
 	// own rebuild is what constructs the real agent for the first time.
 	needsOnboarding bool
+	// lspManager owns any language servers started on demand. Nil when no
+	// server is both installed and relevant to this project.
+	lspManager *lsp.Manager
+	// todos is the checklist the model keeps, handed to the TUI so ctrl+t can
+	// draw the same list rather than a copy of it.
+	todos *tools.TodoList
 }
 
 // Close releases everything the session opened: the sessions database, any
-// live MCP server connections, and any background processes still running.
+// live MCP server connections, any language servers, and any background
+// processes still running.
 func (s *runSession) Close() error {
 	if s.mcpManager != nil {
 		s.mcpManager.Close()
 	}
+	// A language server left running outlives the terminal it was started
+	// from: gopls in particular holds an index of the whole module.
+	s.lspManager.Close()
 	if s.procs != nil {
 		s.procs.KillAll()
 	}
@@ -122,7 +133,12 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 		}, nil
 	}
 
-	a, promptOpts, mgr := assembleAgent(ctx, provider, cwd, mode, broker, procs, asker)
+	// Created once and reused across rebuilds. A /model or /skill change has
+	// nothing to do with the language server, and restarting gopls would make
+	// the project wait to be indexed all over again.
+	lspManager := lsp.NewManager(cwd)
+
+	a, promptOpts, mgr, todos := assembleAgent(ctx, provider, cwd, mode, broker, procs, asker, lspManager)
 
 	return &runSession{
 		agent:      a,
@@ -134,6 +150,8 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 		meta:       meta,
 		history:    history,
 		mcpManager: mgr,
+		lspManager: lspManager,
+		todos:      todos,
 		procs:      procs,
 		asker:      asker,
 	}, nil
@@ -149,8 +167,16 @@ func newSession(ctx context.Context, g *globalFlags, mode permission.Mode, decid
 // stderr rather than failing the whole build — this mirrors Connect's own
 // per-server error isolation: one broken server should not stop Kiwi from
 // starting.
-func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode permission.Mode, broker *permission.Broker, procs *proc.Registry, asker tools.Asker) (*agent.Agent, prompt.Options, *mcp.Manager) {
+func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode permission.Mode, broker *permission.Broker, procs *proc.Registry, asker tools.Asker, lspManager *lsp.Manager) (*agent.Agent, prompt.Options, *mcp.Manager, *tools.TodoList) {
 	projectFile, projectInstructions := config.ProjectInstructions(cwd)
+
+	// Installed before loading, so a fresh machine has the built-in skills
+	// available on its very first turn. Failing here is not worth stopping
+	// for: the session works fine without them, and saying so once is more
+	// useful than refusing to start.
+	if _, err := skills.Seed(); err != nil {
+		fmt.Fprintln(os.Stderr, "kiwi: warning: installing built-in skills:", err)
+	}
 
 	loadedSkills, err := skills.Load()
 	if err != nil {
@@ -188,7 +214,17 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 	if len(loadedSkills) > 0 {
 		extraTools = append(extraTools, tools.LoadSkill{Skills: loadedSkills})
 	}
+	// Registered only when a server is actually there to answer. A tool the
+	// model can see but that can only fail is worse than no tool: it will
+	// keep reaching for it, and pay for the schema in every request.
+	if lspManager != nil {
+		extraTools = append(extraTools, tools.LSP{
+			Manager: lspManager,
+			FS:      &tools.FS{WorkDir: cwd, Perms: broker},
+		})
+	}
 	extraTools = append(extraTools,
+		tools.WebFetch{Perms: broker},
 		tools.BackgroundBash{WorkDir: cwd, Perms: broker, Procs: procs},
 		tools.BackgroundOutput{Procs: procs},
 		tools.KillShell{Procs: procs},
@@ -206,9 +242,16 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 	}
 	generalTools := fullTools.Subset(generalNames...)
 
+	// The explore subagent lives on search, so it gets the search tools
+	// before anything else. They are read-only by construction, which is what
+	// makes them safe to hand to a subagent with no permission mode of its
+	// own.
 	exploreFS := &tools.FS{WorkDir: cwd, Perms: broker}
 	exploreTools := tools.NewRegistry(
 		tools.ReadFile{FS: exploreFS},
+		tools.Glob{FS: exploreFS},
+		tools.Grep{FS: exploreFS},
+		tools.List{FS: exploreFS},
 		tools.ReadOnlyBash{Bash: tools.Bash{WorkDir: cwd, Perms: broker}},
 	)
 
@@ -217,6 +260,14 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 	// nothing it decides is worth writing into the memory every future session
 	// pays for. Only the agent the user is actually talking to remembers.
 	fullTools.Register(tools.Remember{Store: mem, Perms: broker})
+
+	// The checklist belongs to the agent the user is talking to. A subagent
+	// returns one result and its context is thrown away, so a list it kept
+	// would be written for nobody — which is also why OpenCode disables its
+	// equivalent for subagents by default.
+	todos := &tools.TodoList{}
+	fullTools.Register(tools.TodoWrite{List: todos})
+	fullTools.Register(tools.TodoRead{List: todos})
 
 	// Only registered when something can actually show questions to a human
 	// — asker is nil for `kiwi ask` and other headless runs. Kept out of
@@ -238,8 +289,11 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 		Provider: provider,
 		Tools:    fullTools,
 		System:   prompt.Build(promptOpts),
+		// The starting budget. A later shift+tab keeps it in step through
+		// the TUI's applyMode.
+		MaxSteps: mode.MaxSteps(),
 	}
-	return a, promptOpts, mgr
+	return a, promptOpts, mgr, todos
 }
 
 // rebuildAgent reconstructs the agent from current on-disk configuration,
@@ -265,7 +319,8 @@ func (s *runSession) rebuildAgent(ctx context.Context) (*agent.Agent, string, er
 		return nil, "", err
 	}
 
-	a, _, mgr := assembleAgent(ctx, provider, s.workDir, s.broker.Mode(), s.broker, s.procs, s.asker)
+	a, _, mgr, todos := assembleAgent(ctx, provider, s.workDir, s.broker.Mode(), s.broker, s.procs, s.asker, s.lspManager)
+	s.todos = todos
 
 	if s.mcpManager != nil {
 		s.mcpManager.Close()
