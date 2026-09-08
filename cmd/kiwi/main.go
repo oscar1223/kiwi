@@ -10,6 +10,7 @@ import (
 
 	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/telemetry"
+	"github.com/oscar1223/kiwi/internal/update"
 )
 
 func main() {
@@ -27,6 +28,10 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "kiwi: loading .env:", err)
 		return 1
 	}
+
+	// On Windows a self-update leaves the previous binary behind, because a
+	// running .exe cannot be deleted. It can now.
+	update.CleanupOld()
 
 	ctx := context.Background()
 

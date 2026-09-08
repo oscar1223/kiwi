@@ -48,6 +48,7 @@ func runTUI(ctx context.Context, g *globalFlags, mode permission.Mode) error {
 		Rebuild:         func() (*agent.Agent, string, error) { return sess.rebuildAgent(ctx) },
 		Todos:           sess.todos,
 		NeedsOnboarding: sess.needsOnboarding,
+		Version:         version,
 	})
 
 	// Automatic decisions are logged so there is always a trace of why an

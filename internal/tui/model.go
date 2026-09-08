@@ -61,6 +61,10 @@ type Options struct {
 	// configured yet — the shape of a brand-new install. Init runs the
 	// setup wizard instead of the normal banner in that case.
 	NeedsOnboarding bool
+	// Version is what this build reports, used to check for a newer release in
+	// the background. Empty (or "dev") skips the check, which is what the
+	// tests below rely on.
+	Version string
 }
 
 // Model is the Bubble Tea model for Kiwi's terminal interface.
@@ -237,6 +241,7 @@ func (m *Model) Init() tea.Cmd {
 		m.input.Focus(),
 		m.println(banner(m.opts.ModelLabel, m.opts.WorkDir)),
 		m.initCheckpoints(),
+		checkUpdateCmd(m.opts.Version),
 	)
 }
 
@@ -371,6 +376,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		return m, tea.Batch(m.println(bullet(styleErr.Render("✗"), styleErr.Render(msg.err.Error()))), m.events.next())
+
+	case updateAvailableMsg:
+		// Arrives a moment after the banner, since the lookup runs in the
+		// background. No events.next() here: this is not a turn event.
+		return m, m.println(updateNotice(string(msg)))
 
 	case printLinesMsg:
 		prints := make([]tea.Cmd, 0, len(msg.lines))

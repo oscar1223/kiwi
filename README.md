@@ -17,6 +17,37 @@ O compilando desde el repo:
 go build -o kiwi ./cmd/kiwi
 ```
 
+## Actualizar
+
+```sh
+kiwi update
+```
+
+Descarga la build de tu plataforma, **verifica el SHA256** contra los checksums
+publicados con la release y reemplaza el binario en marcha. En Unix el reemplazo
+es un `rename` atómico, así que la sesión que lanzó el comando sigue viva con el
+binario anterior; en Windows el `.exe` viejo se aparta y se borra al siguiente
+arranque, porque Windows no deja eliminar un ejecutable en uso.
+
+Si kiwi lo instaló un gestor de paquetes, **el binario es suyo**: sobrescribirlo
+a mano dejaría a Homebrew o Scoop apuntando a una versión que ya no está en
+disco. En ese caso `kiwi update` detecta el canal y te da el comando correcto en
+vez de tocar el fichero:
+
+| Instalado con | `kiwi update` te dice |
+| --- | --- |
+| script o descarga manual | *(se actualiza solo)* |
+| Homebrew | `brew upgrade --cask kiwi` |
+| Scoop | `scoop update kiwi` |
+| `go install` | `go install github.com/oscar1223/kiwi/cmd/kiwi@latest` |
+
+`kiwi update --check` solo mira si hay algo nuevo, sin instalar nada.
+
+Al arrancar, kiwi comprueba **como mucho una vez al día** si hay versión nueva y
+lo menciona en una línea. La comprobación nunca bloquea el arranque y nunca
+escribe un error —una que se queja de la red es peor que no tenerla—. Para
+apagarla: `KIWI_NO_UPDATE_CHECK=1`.
+
 ## Primer uso
 
 ```sh
