@@ -15,7 +15,8 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
-	"syscall"
+
+	"github.com/oscar1223/kiwi/internal/procgroup"
 )
 
 // defaultBufferCap bounds how much output one process's ring buffer retains.
@@ -86,9 +87,9 @@ func (p *Process) kill() error {
 	if proc == nil {
 		return nil
 	}
-	// Negative pid targets the whole process group (see Start's Setpgid),
-	// so a server's own child processes die with it instead of lingering.
-	return syscall.Kill(-proc.Pid, syscall.SIGKILL)
+	// Kills the whole process group (see Start's procgroup.Configure), so a
+	// server's own child processes die with it instead of lingering.
+	return procgroup.Kill(proc)
 }
 
 // Registry tracks every background process started through it.
@@ -112,7 +113,7 @@ func (r *Registry) Start(workDir, command string) (*Process, error) {
 
 	cmd := exec.Command("bash", "-c", command)
 	cmd.Dir = workDir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procgroup.Configure(cmd)
 
 	buf := newRingBuffer(defaultBufferCap)
 	cmd.Stdout = buf
