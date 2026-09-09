@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/oscar1223/kiwi/internal/permission"
+	"github.com/oscar1223/kiwi/internal/procgroup"
 )
 
 const (
@@ -91,12 +91,9 @@ func (t Bash) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	// Give the child its own process group and kill the group, not just the
 	// leader: `npm run dev` spawns children that would otherwise survive and
 	// keep holding the port.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	procgroup.Configure(cmd)
 	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return procgroup.Kill(cmd.Process)
 	}
 
 	var buf bytes.Buffer

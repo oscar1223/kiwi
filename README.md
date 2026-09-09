@@ -7,6 +7,47 @@ sobre tu proyecto con el permiso que tú le des.
 
 ## Instalación
 
+**macOS y Linux**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/oscar1223/kiwi/main/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/oscar1223/kiwi/main/install.ps1 | iex
+```
+
+**Homebrew**
+
+```sh
+brew install oscar1223/tap/kiwi
+```
+
+**Scoop**
+
+```powershell
+scoop bucket add oscar1223 https://github.com/oscar1223/scoop-bucket
+scoop install kiwi
+```
+
+También puedes bajar el binario a mano desde
+[Releases](https://github.com/oscar1223/kiwi/releases).
+
+> En macOS, un archivo descargado **con el navegador** queda en cuarentena.
+> Si Gatekeeper lo bloquea: `xattr -d com.apple.quarantine ./kiwi`.
+> Bajarlo con `curl` o instalarlo con `brew` no tiene ese problema.
+
+> En Windows, la herramienta `bash` de Kiwi ejecuta los comandos con `bash -c`,
+> así que necesitas **Git Bash o WSL** en el `PATH`. Sin ellos el binario
+> arranca y la TUI funciona, pero cualquier comando que el agente intente
+> ejecutar fallará.
+
+### Desde fuentes
+
+Requiere Go 1.27+:
+
 ```sh
 go install github.com/oscar1223/kiwi/cmd/kiwi@latest
 ```
