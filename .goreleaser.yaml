@@ -1,0 +1,78 @@
+version: 2
+
+project_name: kiwi
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: kiwi
+    main: ./cmd/kiwi
+    binary: kiwi
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      # -s -w quita símbolos y DWARF: el binario sin strippear pesa ~76 MB.
+      # -X inyecta la versión en cmd/kiwi/root.go:13 (var version = "dev").
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - id: kiwi
+    # Nombre estable y sin versión: install.sh construye esta URL a mano.
+    name_template: "kiwi_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
+
+# Homebrew: tap propio, sin pasar por homebrew-core.
+homebrew_casks:
+  - name: kiwi
+    binaries: [kiwi]
+    repository:
+      owner: oscar1223
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/oscar1223/kiwi"
+    description: "Agente de código local-first para la terminal"
+    hooks:
+      post:
+        install: |
+          # El binario no está firmado por Apple: quitamos la cuarentena
+          # que macOS le pone a todo lo bajado, o Gatekeeper lo bloquea.
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kiwi"]
+          end
+
+scoops:
+  - name: kiwi
+    repository:
+      owner: oscar1223
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/oscar1223/kiwi"
+    description: "Agente de código local-first para la terminal"
+    license: MIT
