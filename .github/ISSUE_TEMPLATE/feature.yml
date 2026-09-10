@@ -1,0 +1,33 @@
+name: Nueva funcionalidad
+description: Una idea o mejora para Kiwi. Entra en el tablero, en Backlog.
+labels: [enhancement]
+projects: ["oscar1223/1"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Qué
+      description: Qué debería poder hacer Kiwi que hoy no hace.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Por qué
+      description: El problema que resuelve o el caso de uso.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Criterios de aceptación
+      description: Cómo se comprueba que está hecho.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notas técnicas
+      description: Paquetes, ficheros o decisiones relevantes (opcional).
