@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/oscar1223/kiwi/internal/agent"
 	"github.com/oscar1223/kiwi/internal/checkpoint"
+	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/oscar1223/kiwi/internal/prompt"
@@ -1490,6 +1491,11 @@ func (m *Model) statusLine() string {
 	parts := []string{
 		modeStyle(mode).Render(mode.Label()),
 		styleDim.Render(m.opts.ModelLabel),
+	}
+	if config.IsDev() {
+		// A development build keeps its own sessions and settings; saying so
+		// up front stops it being mistaken for the release you actually use.
+		parts = append([]string{lipgloss.NewStyle().Foreground(colWarn).Bold(true).Render("DEV")}, parts...)
 	}
 	if len(m.history) > 0 {
 		parts = append(parts, styleDim.Render(sprintf("%d msgs", len(m.history))))
