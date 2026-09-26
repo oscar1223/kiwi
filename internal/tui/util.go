@@ -14,7 +14,7 @@ func sprintf(format string, args ...any) string { return fmt.Sprintf(format, arg
 // oneLine collapses text to a single line and caps its length, for the
 // summaries shown next to tool calls.
 func oneLine(s string, max int) string {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(cleanText(s))
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = strings.TrimSpace(s[:i]) + " …"
 	}

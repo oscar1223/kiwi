@@ -111,6 +111,11 @@ type Model struct {
 	tail    string
 	inFence bool
 	spoke   bool
+	// table holds the rows of a markdown table still being streamed, and
+	// tablePrefix the marker its first row was printed behind. A table is
+	// only laid out once it is complete (see table.go).
+	table       []string
+	tablePrefix string
 
 	pending *permission.Request
 
@@ -762,6 +767,7 @@ func (m *Model) startTurn(display, sent string, attached, missing []string) tea.
 	m.spoke = false
 	m.tail = ""
 	m.inFence = false
+	m.table, m.tablePrefix = nil, ""
 
 	base := m.opts.BaseContext
 	if base == nil {
@@ -1002,6 +1008,7 @@ func (m *Model) cancelTurn() tea.Cmd {
 	}
 	m.gen++
 	m.busy = false
+	m.flushTable()
 	tail := m.tail
 	m.tail = ""
 
@@ -1051,6 +1058,9 @@ func (m *Model) stream(delta string) tea.Cmd {
 
 // flushTail files the last partial line at the end of a turn.
 func (m *Model) flushTail() tea.Cmd {
+	// A table is held back until it ends, and an answer that ends on one
+	// has no line after it to end it.
+	defer m.flushTable()
 	if m.tail == "" {
 		return nil
 	}
@@ -1058,6 +1068,15 @@ func (m *Model) flushTail() tea.Cmd {
 	m.tail = ""
 	m.record(line)
 	return nil
+}
+
+// flushTable files the table being streamed, if there is one.
+func (m *Model) flushTable() {
+	if len(m.table) == 0 {
+		return
+	}
+	m.transcript.add(entry{kind: entryTable, table: m.table, prefix: m.tablePrefix})
+	m.table, m.tablePrefix = nil, ""
 }
 
 // record files one line of assistant output in the transcript.
@@ -1068,11 +1087,21 @@ func (m *Model) flushTail() tea.Cmd {
 // rather than at render time is what lets the transcript be rewrapped as often
 // as the window changes without the fences walking.
 func (m *Model) record(line string) {
+	line = cleanLine(line)
 	prefix := "  "
 	if !m.spoke {
 		prefix = styleKiwi.Render("● ")
 		m.spoke = true
 	}
+
+	if !m.inFence && isTableRow(line) {
+		if len(m.table) == 0 {
+			m.tablePrefix = prefix
+		}
+		m.table = append(m.table, line)
+		return
+	}
+	m.flushTable()
 
 	switch {
 	case strings.HasPrefix(strings.TrimSpace(line), "```"):
@@ -1105,7 +1134,8 @@ func (m *Model) println(s string) tea.Cmd {
 // is arriving; nothing is lost either way, since every line is filed in the
 // transcript in full the moment its newline arrives.
 func (m *Model) renderTail() string {
-	lines := strings.Split(wrapIndent("  ", hangingIndent(m.tail), m.styleLine(m.tail), m.textWidth()), "\n")
+	tail := cleanLine(m.tail)
+	lines := strings.Split(wrapIndent("  ", hangingIndent(tail), m.styleLine(tail), m.textWidth()), "\n")
 	if limit := m.tailRows(); len(lines) > limit {
 		lines = lines[len(lines)-limit:]
 	}
@@ -1362,14 +1392,22 @@ func (m *Model) viewportBlock(width, height int) []string {
 // which is shown in place at the end rather than in a region of its own.
 func (m *Model) transcriptRows(width int) []string {
 	rows := m.transcript.screen(width)
-	if m.tail == "" {
+	if m.tail == "" && len(m.table) == 0 {
 		return rows
 	}
 	// Copied rather than appended in place: the slice returned above is the
 	// transcript's own cache, and growing it would write into it.
 	out := make([]string, 0, len(rows)+1)
 	out = append(out, rows...)
-	return append(out, wrapStyled(m.renderTail(), width)...)
+	// A table still arriving is drawn as it stands, so it grows in place
+	// rather than appearing all at once when it ends.
+	for _, row := range renderTable(m.table, m.tablePrefix, width) {
+		out = append(out, wrapStyled(row, width)...)
+	}
+	if m.tail != "" {
+		out = append(out, wrapStyled(m.renderTail(), width)...)
+	}
+	return out
 }
 
 // scrollOffset is the first transcript row visible in a window of the given
