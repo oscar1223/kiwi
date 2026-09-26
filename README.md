@@ -1,4 +1,6 @@
-# 🥝 Kiwi
+<p align="center"><img src="assets/kiwi.svg" width="96" height="96" alt="kiwi"></p>
+
+# Kiwi
 
 Kiwi es un agente de código local-first para la terminal: memoria de conversación, tools
 sobre tu sistema de archivos, ejecución de comandos y una TUI inspirada en herramientas
