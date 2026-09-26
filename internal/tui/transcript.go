@@ -22,6 +22,8 @@ const (
 	entryCode
 	// entryFence is the ``` line that opens or closes a code block.
 	entryFence
+	// entryTable is a whole markdown table, laid out at render time.
+	entryTable
 )
 
 // entry is one logical line of the session, stored unwrapped.
@@ -33,6 +35,7 @@ type entry struct {
 	kind   entryKind
 	text   string
 	prefix string
+	table  []string // the raw rows of an entryTable
 }
 
 // transcript holds everything the session has printed, unwrapped.
@@ -97,6 +100,8 @@ func (t *transcript) render(width int) []string {
 // patched-up version of the old one.
 func (e entry) rows(width int) []string {
 	switch e.kind {
+	case entryTable:
+		return renderTable(e.table, e.prefix, width)
 	case entryFence:
 		return []string{e.prefix + styleDim.Render(e.text)}
 	case entryCode:

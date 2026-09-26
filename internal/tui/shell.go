@@ -64,7 +64,7 @@ func (m *Model) shellCommand(line string) tea.Cmd {
 
 // renderShellResult formats a finished command for the transcript.
 func renderShellResult(msg shellResultMsg) string {
-	body := strings.TrimRight(msg.output, "\n")
+	body := strings.TrimRight(cleanText(msg.output), "\n")
 	lines := strings.Split(body, "\n")
 	if body == "" {
 		lines = nil
