@@ -188,6 +188,17 @@ func Default() *Config {
 	}
 }
 
+// appName names the config and data directories. Release builds keep "kiwi";
+// `make dev` overrides it at link time with
+// -X github.com/oscar1223/kiwi/internal/config.appName=kiwi-dev, so a build
+// under development never reads or writes the sessions, memory and settings
+// of the kiwi you use day to day. It is not done with XDG_CONFIG_HOME because
+// every command the agent runs would inherit that and change behaviour too.
+var appName = "kiwi"
+
+// IsDev reports whether this is an isolated development build.
+func IsDev() bool { return appName != "kiwi" }
+
 // Dir is the configuration directory, honouring XDG_CONFIG_HOME.
 func Dir() (string, error) {
 	base := os.Getenv("XDG_CONFIG_HOME")
@@ -198,7 +209,7 @@ func Dir() (string, error) {
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "kiwi"), nil
+	return filepath.Join(base, appName), nil
 }
 
 // DataDir is where sessions and other state live.
@@ -211,7 +222,7 @@ func DataDir() (string, error) {
 		}
 		base = filepath.Join(home, ".local", "share")
 	}
-	return filepath.Join(base, "kiwi"), nil
+	return filepath.Join(base, appName), nil
 }
 
 // Load reads the config file, returning defaults if it does not exist yet.
