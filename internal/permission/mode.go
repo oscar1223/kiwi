@@ -71,7 +71,7 @@ runs read-only commands (ls, cat, grep, find, git status/log/diff, …) — anyt
 else is denied automatically without asking the user.
 
 Everything you need to investigate is open to you: grep and glob search the
-code, ls maps a directory, and web_fetch reads documentation. Use them rather
+code, ls maps a directory, web_search finds pages and web_fetch reads them. Use them rather
 than guessing — a plan built on an assumption you could have checked is worth
 less than no plan.
 

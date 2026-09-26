@@ -1735,6 +1735,7 @@ var commandRegistry = []commandSpec{
 	{"/model", "switch or manage model profiles"},
 	{"/config", "manage .env variables"},
 	{"/mcp", "manage MCP servers"},
+	{"/doctor", "which ways of reaching the internet work here"},
 	{"/skill", "manage skills"},
 	{"/theme", "switch the colour theme"},
 	{"/sessions", "switch between saved conversations"},
@@ -1834,6 +1835,8 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 		return m.runFlow(m.configFlow), true
 	case "/mcp":
 		return m.runFlow(m.mcpFlow), true
+	case "/doctor":
+		return m.runFlow(m.doctorFlow), true
 	case "/skill":
 		return m.runFlow(m.skillFlow), true
 	case "/theme":

@@ -136,6 +136,7 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
 | `/model`     | cambia o gestiona perfiles de modelo                  |
 | `/config`    | gestiona variables de `.env`                          |
 | `/mcp`       | gestiona servidores MCP                               |
+| `/doctor`    | qué vías para llegar a internet funcionan aquí         |
 | `/skill`     | gestiona skills                                       |
 | `/theme`     | cambia el tema de color, con vista previa en vivo      |
 | `/sessions`  | cambia entre conversaciones guardadas del proyecto     |
@@ -162,6 +163,12 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
   direcciones de loopback, privadas y link-local —incluida `169.254.169.254`, la de
   metadatos de las nubes— y lo comprueba al abrir la conexión, así que una
   redirección hacia dentro tampoco cuela. Libre en `plan` y `work`, pregunta en `ask`.
+  Con `reader: true` la página se renderiza en [Jina Reader](https://jina.ai/reader)
+  (`r.jina.ai`) y vuelve como markdown: sirve para webs hechas con JavaScript. Esa
+  URL sí pasa por un tercero, y el aviso de permiso lo dice.
+- `web_search` — busca en la web y devuelve título, URL y fragmento. Usa Exa si hay
+  `EXA_API_KEY`, Jina si hay `JINA_API_KEY` y, sin clave, DuckDuckGo. Mismos permisos
+  que `web_fetch`.
 - `bash` — ejecuta comandos; en segundo plano con `background_bash` /
   `background_output` / `kill_shell` para procesos de larga duración.
 - `task` — lanza subagentes para investigación o trabajo en paralelo.
@@ -340,7 +347,7 @@ un nombre; el servidor lo resuelve. Se configura con `KIWI_LSP`
 
 ## Skills
 
-kiwi trae **seis skills instaladas de fábrica**, embebidas en el binario y
+kiwi trae **siete skills instaladas de fábrica**, embebidas en el binario y
 sembradas en `~/.config/kiwi/skills/` la primera vez que arranca — sin eso, un
 `go install` recién hecho dejaría el directorio vacío y "prefabricadas" no
 querría decir nada.
@@ -353,6 +360,24 @@ querría decir nada.
 | `init` | escribe `KIWI.md` leyendo el proyecto antes |
 | `security-review` | inyección, secretos, autorización, SSRF, travesía de rutas, defaults inseguros |
 | `test` | encuentra los comandos reales de *este* repo, los corre y lee los fallos |
+| `reach` | investiga en internet: búsqueda, webs con JS, YouTube (`yt-dlp`), GitHub (`gh`), RSS, Reddit |
+
+### Llegar a internet
+
+La skill `reach` y `kiwi doctor` están inspirados en
+[Agent Reach](https://github.com/Panniantong/agent-reach): el agente usa
+herramientas de línea de comandos normales para cada plataforma, y `kiwi doctor`
+(o `/doctor` dentro de la TUI) dice cuáles funcionan en tu máquina y cómo activar
+las que faltan. Solo mira; no instala nada.
+
+```text
+$ kiwi doctor
+✓ Web pages    web_fetch; reader: true for JavaScript pages (Jina Reader)
+✓ Web search   web_search via DuckDuckGo (no key) — set EXA_API_KEY or JINA_API_KEY with /config for better results
+✗ YouTube      brew install yt-dlp
+✓ GitHub       gh (signed in)
+…
+```
 
 **Nunca se pisa lo que hayas tocado.** Una skill solo se refresca si lo que hay
 en disco es byte a byte la versión que kiwi escribió por última vez, que es

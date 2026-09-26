@@ -56,9 +56,11 @@ Search before reading. Narrowing with grep and then reading the files it points
 at costs a fraction of what opening files to see what is in them does.
 
 web_fetch reads a URL when the answer is in documentation rather than in this
-repository. Reach for it instead of working from a half-remembered API — a
-library's own page is worth more than your recollection of it, and it is
-current.
+repository, and web_search finds the URL when you do not know it. Reach for
+them instead of working from a half-remembered API — a library's own page is
+worth more than your recollection of it, and it is current. A page that comes
+back nearly empty was probably built by JavaScript: fetch it again with
+reader: true.
 
 When the lsp tool is available, prefer it for the one question grep cannot
 answer honestly: which of these matches is the same symbol. grep finds a name;
