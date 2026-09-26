@@ -116,6 +116,11 @@ type Model struct {
 	// only laid out once it is complete (see table.go).
 	table       []string
 	tablePrefix string
+	// thinking is set while the model is reasoning; thought holds the tail
+	// of that reasoning and thoughtWords how much of it there has been.
+	thinking     bool
+	thought      string
+	thoughtWords int
 
 	pending *permission.Request
 
@@ -299,12 +304,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.gen {
 			return m, m.events.next()
 		}
+		m.stopThinking()
 		return m, tea.Batch(m.stream(msg.delta), m.events.next())
+
+	case reasoningDeltaMsg:
+		if msg.gen == m.gen && m.busy {
+			m.think(msg.delta)
+		}
+		return m, m.events.next()
 
 	case toolCallMsg:
 		if msg.gen != m.gen {
 			return m, m.events.next()
 		}
+		m.stopThinking()
 		return m, tea.Batch(
 			tea.Sequence(m.flushTail(), m.println(renderToolCall(msg.call))),
 			m.events.next(),
@@ -329,6 +342,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessionUsage.InputTokens += msg.usage.InputTokens
 		m.sessionUsage.OutputTokens += msg.usage.OutputTokens
 		m.busy = false
+		m.stopThinking()
 		if m.cancel != nil {
 			m.cancel()
 			m.cancel = nil
@@ -768,6 +782,7 @@ func (m *Model) startTurn(display, sent string, attached, missing []string) tea.
 	m.tail = ""
 	m.inFence = false
 	m.table, m.tablePrefix = nil, ""
+	m.stopThinking()
 
 	base := m.opts.BaseContext
 	if base == nil {
@@ -1009,6 +1024,7 @@ func (m *Model) cancelTurn() tea.Cmd {
 	m.gen++
 	m.busy = false
 	m.flushTable()
+	m.stopThinking()
 	tail := m.tail
 	m.tail = ""
 
@@ -1319,7 +1335,9 @@ func (m *Model) blocked() bool {
 // it opens on and the column its text begins at — which is what the cursor has
 // to be offset by.
 func (m *Model) bottomBlock(width int) (rows []string, cursorRow, cursorCol int) {
-	if m.busy {
+	if m.busy && m.thinking {
+		rows = append(rows, m.thinkingRow(width))
+	} else if m.busy {
 		rows = append(rows, fit(sprintf("%s %s",
 			m.spinner.View(),
 			styleDim.Render(sprintf("working… %s · esc to cancel", elapsed(m.began)))), width))
@@ -1570,6 +1588,9 @@ func (m *Model) statusLine() string {
 		modeStyle(mode).Render(mode.Label()),
 		styleDim.Render(m.opts.ModelLabel),
 	}
+	if think := m.reasoningLabel(); think != "" {
+		parts = append(parts, styleDim.Render(think))
+	}
 	if config.IsDev() {
 		// A development build keeps its own sessions and settings; saying so
 		// up front stops it being mistaken for the release you actually use.
@@ -1771,6 +1792,7 @@ var commandRegistry = []commandSpec{
 	{"/work", "switch to work mode — edits apply automatically"},
 	{"/settings", "open the settings menu"},
 	{"/model", "switch or manage model profiles"},
+	{"/reasoning", "how hard the model thinks (off … max)"},
 	{"/config", "manage .env variables"},
 	{"/mcp", "manage MCP servers"},
 	{"/doctor", "which ways of reaching the internet work here"},
@@ -1869,6 +1891,8 @@ func (m *Model) command(text string) (tea.Cmd, bool) {
 		return tea.Quit, true
 	case "/model":
 		return m.runFlow(m.modelFlow), true
+	case "/reasoning":
+		return m.reasoningCommand(text), true
 	case "/config":
 		return m.runFlow(m.configFlow), true
 	case "/mcp":

@@ -126,3 +126,40 @@ func TestBuildProviderMissingAPIKeyIsErrMissingAPIKey(t *testing.T) {
 		t.Errorf("err = %v, want it to wrap ErrMissingAPIKey", err)
 	}
 }
+
+func TestSetReasoningPersists(t *testing.T) {
+	cfg := newTestConfig(t)
+	if err := cfg.SetReasoning("sonnet", "XHigh"); err != nil {
+		t.Fatalf("SetReasoning: %v", err)
+	}
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Profiles["sonnet"].Reasoning; got != "xhigh" {
+		t.Errorf("Reasoning = %q, want xhigh", got)
+	}
+
+	if err := cfg.SetReasoning("sonnet", "default"); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded, _ = Load(); reloaded.Profiles["sonnet"].Reasoning != "" {
+		t.Errorf("default did not clear the field: %q", reloaded.Profiles["sonnet"].Reasoning)
+	}
+
+	if err := cfg.SetReasoning("sonnet", "extreme"); err == nil {
+		t.Error("an unknown level was saved")
+	}
+	if err := cfg.SetReasoning("nope", "low"); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("unknown profile: %v", err)
+	}
+}
+
+// A typo in kiwi.json is reported when the profile is used, not silently
+// ignored.
+func TestBuildProviderRejectsAnUnknownLevel(t *testing.T) {
+	_, err := BuildProvider(context.Background(), "x", Profile{Provider: KindOpenAI, Model: "m", BaseURL: "http://localhost", Reasoning: "loads"})
+	if err == nil {
+		t.Error("BuildProvider accepted reasoning \"loads\"")
+	}
+}

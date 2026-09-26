@@ -134,6 +134,7 @@ tecleando (flechas para navegar, `tab` o `enter` para completar).
 | `/review`    | revisa los cambios actuales con un agente aparte       |
 | `/settings`  | menú agrupado con todo lo de abajo                    |
 | `/model`     | cambia o gestiona perfiles de modelo                  |
+| `/reasoning` | cuánto piensa el modelo: `off` … `max` (se guarda en el perfil) |
 | `/config`    | gestiona variables de `.env`                          |
 | `/mcp`       | gestiona servidores MCP                               |
 | `/doctor`    | qué vías para llegar a internet funcionan aquí         |
@@ -272,6 +273,35 @@ Todo vive bajo `~/.config/kiwi/` (u `$XDG_CONFIG_HOME/kiwi/`):
       AWS (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`, un perfil compartido, o
       `AWS_BEARER_TOKEN_BEDROCK`).
 - `.env` — API keys y demás variables, gestionadas con `/config`.
+
+### Razonamiento
+
+Cada perfil puede fijar cuánto piensa el modelo antes de responder con `reasoning`:
+`off`, `low`, `medium`, `high`, `xhigh` o `max`. Sin el campo, manda el proveedor
+(muchos modelos razonan por defecto: GLM 5.2 por OpenRouter lo hace con `high`).
+
+```json
+"glm": {
+  "provider": "openai",
+  "model": "z-ai/glm-5.2",
+  "base_url": "https://openrouter.ai/api/v1",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "reasoning": "off"
+}
+```
+
+`/reasoning` lo cambia en vivo y lo guarda en el perfil activo (`/reasoning high`, o sin
+argumento para elegir de una lista). La barra de estado muestra el nivel, y mientras el
+modelo razona la línea del spinner enseña `thinking…` con lo último que está pensando.
+
+Cómo llega a cada proveedor:
+
+| Proveedor | Qué se envía |
+| --- | --- |
+| OpenRouter | `reasoning: {effort}` o `{enabled: false}`; su `reasoning_details` se devuelve en los turnos con herramientas |
+| Z.ai (GLM directo) | `thinking: {type: enabled/disabled}` — solo encendido o apagado |
+| OpenAI y compatibles | `reasoning_effort` (`off` es `none`) |
+| Anthropic, Bedrock, Vertex | thinking adaptativo + `effort`; los bloques firmados vuelven en cada turno. En modelos que no dejan apagarlo (Opus 5.5, Fable), `off` es el esfuerzo mínimo; Haiku 4.5 y anteriores usan un presupuesto de tokens |
 - `mcp.json` — servidores MCP, por stdio o remotos (HTTP/SSE).
 - `skills/` — skills en Markdown que el modelo carga bajo demanda.
 - `memory/` — notas duraderas: `global.md` y una por proyecto en `projects/`.

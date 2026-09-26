@@ -51,6 +51,9 @@ type Profile struct {
 	// APIKeyEnv names the environment variable holding the key. Kiwi never
 	// stores keys in its own config file.
 	APIKeyEnv string `json:"api_key_env,omitempty"`
+	// Reasoning is how hard the model thinks: off, low, medium, high, xhigh
+	// or max. Empty leaves it to the provider's default.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 type Config struct {
@@ -302,6 +305,11 @@ var ErrMissingAPIKey = errors.New("config: missing API key")
 // Vertex and Bedrock, both of which resolve cloud credentials (ADC / the AWS
 // credential chain) up front rather than lazily on first request.
 func BuildProvider(ctx context.Context, name string, p Profile) (llm.Provider, error) {
+	reasoning, err := llm.ParseReasoning(p.Reasoning)
+	if err != nil {
+		return nil, fmt.Errorf("profile %q: %w", name, err)
+	}
+
 	var apiKey string
 	if p.APIKeyEnv != "" {
 		apiKey = os.Getenv(p.APIKeyEnv)
@@ -313,9 +321,10 @@ func BuildProvider(ctx context.Context, name string, p Profile) (llm.Provider, e
 	switch p.Provider {
 	case KindAnthropic:
 		return anthropic.New(anthropic.Options{
-			APIKey:  apiKey,
-			BaseURL: p.BaseURL,
-			Model:   p.Model,
+			APIKey:    apiKey,
+			BaseURL:   p.BaseURL,
+			Model:     p.Model,
+			Reasoning: reasoning,
 		}), nil
 	case KindOpenAI:
 		// Local runtimes ignore the key but the SDK requires a non-empty one.
@@ -323,10 +332,11 @@ func BuildProvider(ctx context.Context, name string, p Profile) (llm.Provider, e
 			apiKey = "not-needed"
 		}
 		return openai.New(openai.Options{
-			APIKey:  apiKey,
-			BaseURL: p.BaseURL,
-			Model:   p.Model,
-			Name:    name,
+			APIKey:    apiKey,
+			BaseURL:   p.BaseURL,
+			Model:     p.Model,
+			Name:      name,
+			Reasoning: reasoning,
 		}), nil
 	case KindAzureOpenAI:
 		resource := os.Getenv("AZURE_RESOURCE_NAME")
@@ -338,6 +348,7 @@ func BuildProvider(ctx context.Context, name string, p Profile) (llm.Provider, e
 			Resource:   resource,
 			APIKey:     azureKey,
 			Deployment: p.Model,
+			Reasoning:  reasoning,
 		}), nil
 	case KindVertex:
 		project := os.Getenv("GOOGLE_VERTEX_PROJECT")
@@ -345,9 +356,9 @@ func BuildProvider(ctx context.Context, name string, p Profile) (llm.Provider, e
 		if project == "" || region == "" {
 			return nil, fmt.Errorf("%w: profile %q needs GOOGLE_VERTEX_PROJECT and GOOGLE_VERTEX_LOCATION to be set in the environment", ErrMissingAPIKey, name)
 		}
-		return anthropic.NewVertex(ctx, region, project, p.Model)
+		return anthropic.NewVertex(ctx, region, project, p.Model, reasoning)
 	case KindBedrock:
-		return anthropic.NewBedrock(ctx, p.Model)
+		return anthropic.NewBedrock(ctx, p.Model, reasoning)
 	default:
 		return nil, fmt.Errorf("profile %q: unknown provider %q", name, p.Provider)
 	}
@@ -407,6 +418,22 @@ func (c *Config) SetCurrent(name string) error {
 		return fmt.Errorf("%w: %q", ErrProfileNotFound, name)
 	}
 	c.Current = name
+	return c.Save()
+}
+
+// SetReasoning changes how hard a profile's model thinks and persists the
+// config. level is anything llm.ParseReasoning accepts.
+func (c *Config) SetReasoning(name, level string) error {
+	p, exists := c.Profiles[name]
+	if !exists {
+		return fmt.Errorf("%w: %q", ErrProfileNotFound, name)
+	}
+	r, err := llm.ParseReasoning(level)
+	if err != nil {
+		return err
+	}
+	p.Reasoning = string(r)
+	c.Profiles[name] = p
 	return c.Save()
 }
 
