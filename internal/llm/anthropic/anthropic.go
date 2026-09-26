@@ -17,15 +17,17 @@ import (
 const defaultMaxTokens = 8192
 
 type Provider struct {
-	client sdk.Client
-	model  string
-	name   string
+	client    sdk.Client
+	model     string
+	name      string
+	reasoning llm.Reasoning
 }
 
 type Options struct {
-	APIKey  string
-	BaseURL string
-	Model   string
+	APIKey    string
+	BaseURL   string
+	Model     string
+	Reasoning llm.Reasoning
 }
 
 // defaultMaxRetries raises the SDK's default of 2. Kiwi's tool loop can burst
@@ -42,7 +44,7 @@ func New(opts Options) *Provider {
 	if opts.BaseURL != "" {
 		reqOpts = append(reqOpts, option.WithBaseURL(opts.BaseURL))
 	}
-	return &Provider{client: sdk.NewClient(reqOpts...), model: opts.Model, name: "anthropic"}
+	return &Provider{client: sdk.NewClient(reqOpts...), model: opts.Model, name: "anthropic", reasoning: opts.Reasoning}
 }
 
 // NewVertex builds a Provider that runs Claude models on Google Vertex AI,
@@ -52,7 +54,7 @@ func New(opts Options) *Provider {
 // be found), unlike New above, which never touches the network at
 // construction time — so unlike New, this can fail, and the panic is
 // recovered into a normal error rather than crashing the caller.
-func NewVertex(ctx context.Context, region, projectID, model string) (p *Provider, err error) {
+func NewVertex(ctx context.Context, region, projectID, model string, reasoning llm.Reasoning) (p *Provider, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			p, err = nil, fmt.Errorf("vertex: %v", r)
@@ -62,13 +64,13 @@ func NewVertex(ctx context.Context, region, projectID, model string) (p *Provide
 		option.WithMaxRetries(defaultMaxRetries),
 		vertex.WithGoogleAuth(ctx, region, projectID),
 	)
-	return &Provider{client: client, model: model, name: "vertex"}, nil
+	return &Provider{client: client, model: model, name: "vertex", reasoning: reasoning}, nil
 }
 
 // NewBedrock builds a Provider that runs Claude models on AWS Bedrock,
 // authenticating with the standard AWS credential chain instead of an API
 // key. See NewVertex for why this returns an error and recovers a panic.
-func NewBedrock(ctx context.Context, model string) (p *Provider, err error) {
+func NewBedrock(ctx context.Context, model string, reasoning llm.Reasoning) (p *Provider, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			p, err = nil, fmt.Errorf("bedrock: %v", r)
@@ -78,11 +80,12 @@ func NewBedrock(ctx context.Context, model string) (p *Provider, err error) {
 		option.WithMaxRetries(defaultMaxRetries),
 		bedrock.WithLoadDefaultConfig(ctx),
 	)
-	return &Provider{client: client, model: model, name: "bedrock"}, nil
+	return &Provider{client: client, model: model, name: "bedrock", reasoning: reasoning}, nil
 }
 
-func (p *Provider) Name() string  { return p.name }
-func (p *Provider) Model() string { return p.model }
+func (p *Provider) Name() string             { return p.name }
+func (p *Provider) Model() string            { return p.model }
+func (p *Provider) Reasoning() llm.Reasoning { return p.reasoning }
 
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Event, error] {
 	return func(yield func(llm.Event, error) bool) {
@@ -106,6 +109,11 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ev
 			// partial JSON and is worthless until assembled, so it is emitted
 			// once, complete, at the end.
 			if delta := event.AsContentBlockDelta(); delta.Type == "content_block_delta" {
+				if text := delta.Delta.Thinking; text != "" {
+					if !yield(llm.Event{Type: llm.EventReasoningDelta, Text: text}, nil) {
+						return
+					}
+				}
 				if text := delta.Delta.Text; text != "" {
 					if !yield(llm.Event{Type: llm.EventTextDelta, Text: text}, nil) {
 						return
@@ -119,8 +127,13 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ev
 		}
 
 		msg := llm.Message{Role: llm.RoleAssistant}
+		var thinking []thinkingBlock
 		for _, block := range acc.Content {
 			switch block.Type {
+			case "thinking":
+				thinking = append(thinking, thinkingBlock{Type: block.Type, Thinking: block.Thinking, Signature: block.Signature})
+			case "redacted_thinking":
+				thinking = append(thinking, thinkingBlock{Type: block.Type, Data: block.Data})
 			case "text":
 				msg.Content += block.Text
 			case "tool_use":
@@ -131,6 +144,8 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ev
 				}
 			}
 		}
+
+		msg.Reasoning = p.trace(thinking)
 
 		yield(llm.Event{
 			Type:    llm.EventDone,
@@ -147,9 +162,13 @@ func (p *Provider) params(req llm.Request) (sdk.MessageNewParams, error) {
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
+		if p.thinks() {
+			// Thinking is spent out of the same budget as the answer.
+			maxTokens = thinkingMaxTokens
+		}
 	}
 
-	msgs, err := toMessages(req.Messages)
+	msgs, err := toMessages(req.Messages, p.source())
 	if err != nil {
 		return sdk.MessageNewParams{}, err
 	}
@@ -162,6 +181,7 @@ func (p *Provider) params(req llm.Request) (sdk.MessageNewParams, error) {
 	if req.System != "" {
 		params.System = []sdk.TextBlockParam{{Text: req.System}}
 	}
+	p.applyReasoning(&params)
 	for _, t := range req.Tools {
 		schema := sdk.ToolInputSchemaParam{}
 		if props, ok := t.Schema["properties"]; ok {
@@ -182,7 +202,7 @@ func (p *Provider) params(req llm.Request) (sdk.MessageNewParams, error) {
 // The subtlety: Anthropic expects every tool_result for one assistant turn to
 // arrive in a *single* user message. Sending one message per result is
 // rejected, so consecutive tool messages are coalesced here.
-func toMessages(in []llm.Message) ([]sdk.MessageParam, error) {
+func toMessages(in []llm.Message, source string) ([]sdk.MessageParam, error) {
 	var out []sdk.MessageParam
 	var pendingResults []sdk.ContentBlockParamUnion
 
@@ -205,7 +225,9 @@ func toMessages(in []llm.Message) ([]sdk.MessageParam, error) {
 
 		case llm.RoleAssistant:
 			flush()
-			var blocks []sdk.ContentBlockParamUnion
+			// Thinking comes first, exactly as it was returned: with tools in
+			// play the API rejects a turn whose thinking went missing.
+			blocks := replayThinking(m.Reasoning, source)
 			if m.Content != "" {
 				blocks = append(blocks, sdk.NewTextBlock(m.Content))
 			}

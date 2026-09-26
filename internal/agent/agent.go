@@ -37,6 +37,13 @@ type Observer interface {
 	OnUsage(u llm.Usage)
 }
 
+// ReasoningObserver is an Observer that also wants the model's reasoning as
+// it streams, for display. It is optional so existing observers need not
+// care about it.
+type ReasoningObserver interface {
+	OnReasoning(delta string)
+}
+
 type NopObserver struct{}
 
 func (NopObserver) OnText(string)                           {}
@@ -199,6 +206,7 @@ func (a *Agent) stream(ctx context.Context, convo []llm.Message, obs Observer) (
 		MaxTokens: a.MaxTokens,
 	}
 
+	thinking, _ := obs.(ReasoningObserver)
 	for ev, streamErr := range a.Provider.Stream(ctx, req) {
 		if streamErr != nil {
 			err = streamErr
@@ -207,6 +215,10 @@ func (a *Agent) stream(ctx context.Context, convo []llm.Message, obs Observer) (
 		switch ev.Type {
 		case llm.EventTextDelta:
 			obs.OnText(ev.Text)
+		case llm.EventReasoningDelta:
+			if thinking != nil {
+				thinking.OnReasoning(ev.Text)
+			}
 		case llm.EventDone:
 			final = ev.Message
 			usage = ev.Usage

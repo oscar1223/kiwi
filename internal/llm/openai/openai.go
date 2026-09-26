@@ -24,9 +24,11 @@ import (
 const defaultAzureAPIVersion = "2024-10-21"
 
 type Provider struct {
-	client sdk.Client
-	model  string
-	name   string
+	client    sdk.Client
+	model     string
+	name      string
+	flavor    flavor
+	reasoning llm.Reasoning
 }
 
 type Options struct {
@@ -35,6 +37,9 @@ type Options struct {
 	Model   string
 	// Name labels the provider in the UI (e.g. "ollama", "openrouter").
 	Name string
+	// Reasoning is how hard the model should think; see reasoning.go for how
+	// it reaches each server.
+	Reasoning llm.Reasoning
 }
 
 // defaultMaxRetries raises the SDK's default of 2. Kiwi's tool loop can burst
@@ -55,7 +60,13 @@ func New(opts Options) *Provider {
 	if name == "" {
 		name = "openai"
 	}
-	return &Provider{client: sdk.NewClient(reqOpts...), model: opts.Model, name: name}
+	return &Provider{
+		client:    sdk.NewClient(reqOpts...),
+		model:     opts.Model,
+		name:      name,
+		flavor:    flavorOf(opts.BaseURL),
+		reasoning: opts.Reasoning,
+	}
 }
 
 type AzureOptions struct {
@@ -70,6 +81,7 @@ type AzureOptions struct {
 	Deployment string
 	// APIVersion defaults to defaultAzureAPIVersion when empty.
 	APIVersion string
+	Reasoning  llm.Reasoning
 }
 
 // NewAzure builds a Provider for an Azure OpenAI deployment. Azure's wire
@@ -87,11 +99,12 @@ func NewAzure(opts AzureOptions) *Provider {
 		azure.WithEndpoint(endpoint, apiVersion),
 		azure.WithAPIKey(opts.APIKey),
 	)
-	return &Provider{client: client, model: opts.Deployment, name: "azure"}
+	return &Provider{client: client, model: opts.Deployment, name: "azure", reasoning: opts.Reasoning}
 }
 
-func (p *Provider) Name() string  { return p.name }
-func (p *Provider) Model() string { return p.model }
+func (p *Provider) Name() string             { return p.name }
+func (p *Provider) Model() string            { return p.model }
+func (p *Provider) Reasoning() llm.Reasoning { return p.reasoning }
 
 func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Event, error] {
 	return func(yield func(llm.Event, error) bool) {
@@ -105,11 +118,18 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ev
 		defer stream.Close()
 
 		var acc sdk.ChatCompletionAccumulator
+		var thought reasoningAccumulator
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
 			if len(chunk.Choices) > 0 {
-				if text := chunk.Choices[0].Delta.Content; text != "" {
+				delta := chunk.Choices[0].Delta
+				if text := thought.add(delta.RawJSON()); text != "" {
+					if !yield(llm.Event{Type: llm.EventReasoningDelta, Text: text}, nil) {
+						return
+					}
+				}
+				if text := delta.Content; text != "" {
 					if !yield(llm.Event{Type: llm.EventTextDelta, Text: text}, nil) {
 						return
 					}
@@ -127,6 +147,7 @@ func (p *Provider) Stream(ctx context.Context, req llm.Request) iter.Seq2[llm.Ev
 
 		choice := acc.Choices[0].Message
 		msg := llm.Message{Role: llm.RoleAssistant, Content: choice.Content}
+		msg.Reasoning = p.trace(&thought)
 		for _, tc := range choice.ToolCalls {
 			call := llm.ToolCall{
 				ID:    tc.ID,
@@ -189,6 +210,7 @@ func (p *Provider) params(req llm.Request) (sdk.ChatCompletionNewParams, error) 
 					},
 				})
 			}
+			p.replay(&am, m.Reasoning)
 			msgs = append(msgs, sdk.ChatCompletionMessageParamUnion{OfAssistant: &am})
 
 		default:
@@ -206,6 +228,7 @@ func (p *Provider) params(req llm.Request) (sdk.ChatCompletionNewParams, error) 
 	if req.Temperature != nil {
 		params.Temperature = sdk.Float(*req.Temperature)
 	}
+	p.applyReasoning(&params)
 	for _, t := range req.Tools {
 		params.Tools = append(params.Tools, sdk.ChatCompletionFunctionTool(shared.FunctionDefinitionParam{
 			Name:        t.Name,

@@ -36,6 +36,10 @@ type Message struct {
 	Content   string     `json:"content,omitempty"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 
+	// Reasoning is set on assistant messages from a model that thought
+	// first, when its provider needs the thinking back (see ReasoningTrace).
+	Reasoning *ReasoningTrace `json:"reasoning,omitempty"`
+
 	// Set on RoleTool messages only.
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
@@ -67,6 +71,9 @@ const (
 	EventToolCall
 	// EventDone is emitted once, last, with the final assembled message.
 	EventDone
+	// EventReasoningDelta carries an incremental chunk of the model's
+	// reasoning, where the provider exposes it. It is for display only.
+	EventReasoningDelta
 )
 
 type Usage struct {
