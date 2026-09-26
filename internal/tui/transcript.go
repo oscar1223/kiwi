@@ -52,6 +52,11 @@ type transcript struct {
 	cacheWidth int
 	cacheRows  []string
 	cacheValid bool
+
+	// The same, broken to fit the screen (see screen).
+	screenWidth int
+	screenRows  []string
+	screenValid bool
 }
 
 // add records one entry. The fence state and the prefix are already resolved
@@ -59,7 +64,7 @@ type transcript struct {
 // what a re-render must not recompute.
 func (t *transcript) add(e entry) {
 	t.entries = append(t.entries, e)
-	t.cacheValid = false
+	t.cacheValid, t.screenValid = false, false
 }
 
 // addStyled records text that is already styled, as printed by println.
@@ -68,7 +73,7 @@ func (t *transcript) addStyled(s string) { t.add(entry{kind: entryStyled, text: 
 // reset empties the transcript, for /clear.
 func (t *transcript) reset() {
 	t.entries = nil
-	t.cacheValid = false
+	t.cacheValid, t.screenValid = false, false
 }
 
 // render lays the whole transcript out for a terminal of the given width.
@@ -118,5 +123,23 @@ func wrapStyled(s string, width int) []string {
 		}
 		out = append(out, line)
 	}
+	return out
+}
+
+// screen is render with every row broken to fit the window, which is what the
+// frame draws. Code is kept whole by render, so it copies back out as written
+// once Kiwi exits; on screen a row wider than the window would be wrapped by
+// the terminal on its own, adding rows the frame did not count and pushing
+// the top of it out of view.
+func (t *transcript) screen(width int) []string {
+	if t.screenValid && t.screenWidth == width && t.cacheValid && t.cacheWidth == width {
+		return t.screenRows
+	}
+	rows := t.render(width)
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, wrapStyled(row, width)...)
+	}
+	t.screenWidth, t.screenRows, t.screenValid = width, out, true
 	return out
 }

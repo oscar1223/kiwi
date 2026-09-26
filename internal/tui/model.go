@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
+	keybind "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
@@ -71,10 +73,8 @@ type Options struct {
 //
 // The frame owns the alt screen: the transcript is held unwrapped (see
 // transcript) and relaid out whenever the window changes, which is what makes
-// a resize correct in both directions. The mouse is deliberately left
-// uncaptured so the terminal's own selection and copy keep working; the scroll
-// wheel reaches us as arrow keys instead, via alternate scroll (see
-// cmd/kiwi/tui.go).
+// a resize correct in both directions. The mouse is captured so the wheel
+// always scrolls the transcript (see View).
 type Model struct {
 	opts   Options
 	events *Events
@@ -182,8 +182,20 @@ func New(opts Options) *Model {
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.Prompt = ""
-	ta.SetHeight(1)
+	// The box grows with what is typed, one row per visual line, up to
+	// MaxHeight (which resize keeps inside the window). Without this it stays
+	// one row tall and scrolls: a wrapped or broken line pushes the one above
+	// it out of sight.
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
 	ta.MaxHeight = 12
+	// MaxHeight only caps how tall the box is drawn. Left at zero, the widget
+	// would also refuse input past MaxHeight lines.
+	ta.MaxContentHeight = 1 << 20
+	ta.SetHeight(1)
+	// enter sends. A newline takes a modifier, with ctrl+j as the one every
+	// terminal can deliver.
+	ta.KeyMap.InsertNewline = keybind.NewBinding(keybind.WithKeys("shift+enter", "alt+enter", "ctrl+j"))
 	// The terminal's own cursor rather than a reverse-video block drawn into
 	// the text: it blinks and takes its shape from the user's settings, and it
 	// leaves no inverted cell behind to confuse a mouse selection. View is
@@ -257,6 +269,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		return m, m.onPaste(msg)
+
+	case tea.MouseWheelMsg:
+		// The wheel only ever scrolls the conversation. It used to arrive as
+		// bare arrows, which prompt history got to first.
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.scrollBy(-wheelRows)
+		case tea.MouseWheelDown:
+			m.scrollBy(wheelRows)
+		}
+		return m, nil
 
 	case spinner.TickMsg:
 		if !m.busy {
@@ -578,9 +601,9 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Scrolling the transcript. pgup/pgdown and shift+arrows are unambiguous
-	// and always scroll; they are the documented way, because they work
-	// whether or not the terminal supports alternate scroll.
+	// Scrolling the transcript from the keyboard. pgup/pgdown and
+	// shift+arrows are unambiguous and always scroll; the wheel is handled in
+	// Update.
 	switch key {
 	case "pgup":
 		m.scrollBy(-m.pageRows())
@@ -595,10 +618,8 @@ func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.scrollBy(1)
 		return m, nil
 	case "up", "down":
-		// The wheel arrives here too: with the mouse uncaptured the terminal
-		// translates it into bare arrows (alternate scroll). They only reach
-		// the transcript when the input cannot use them itself, so a
-		// multi-line prompt still navigates its own text.
+		// Bare arrows only reach the transcript when the input cannot use
+		// them itself, so a multi-line prompt still navigates its own text.
 		//
 		// Recall comes first: an arrow at a single-line prompt is far more
 		// often "give me back what I typed before" than "scroll up one row",
@@ -1163,6 +1184,9 @@ func (m *Model) scrollBy(n int) {
 	m.follow = to >= maxScroll
 }
 
+// wheelRows is how far one notch of the wheel moves the transcript.
+const wheelRows = 3
+
 // scrollToBottom re-pins the view to the newest output.
 func (m *Model) scrollToBottom() {
 	m.follow = true
@@ -1218,12 +1242,13 @@ func (m *Model) View() tea.View {
 	// so a resize relays it out correctly instead of inheriting breaks
 	// measured against the old window.
 	v.AltScreen = true
-	// Deliberately uncaptured: with no mouse tracking the terminal keeps
-	// handling the mouse itself, so selecting and copying work as they do in
-	// any other program. The wheel still scrolls, reaching us as arrow keys
-	// via alternate scroll — a mode the terminal only honours while nothing
-	// is capturing the mouse. See cmd/kiwi/tui.go.
-	v.MouseMode = tea.MouseModeNone
+	// Captured so the wheel is a real wheel event and always scrolls the
+	// transcript. Uncaptured, the terminal sent it as arrow keys, which could
+	// not be told apart from the ones that recall earlier prompts. Selecting
+	// text still works with the terminal's bypass modifier (option in iTerm2
+	// and Ghostty, fn in Terminal.app).
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = windowTitle(m.opts.WorkDir)
 
 	// A cursor is positioned against the frame, not against the widget that
 	// owns it, so it has to be pushed down by everything drawn above.
@@ -1283,19 +1308,34 @@ func (m *Model) bottomBlock(width int) (rows []string, cursorRow, cursorCol int)
 		rows = append(rows, splitRows(renderQuestion(m.activeQuestion, width))...)
 		cursorRow, cursorCol = len(rows)-1, gutter
 	default:
-		rows = append(rows, m.renderShortcuts(width)...)
-		rows = append(rows, m.renderTodos(width)...)
+		above := append(m.renderShortcuts(width), m.renderTodos(width)...)
+		prompt := splitRows(stylePrompt.Render(promptMarker) + m.input.View())
+		below := m.renderQueued(width)
+		if line := m.searchLine(); line != "" {
+			below = append(below, splitRows(line)...)
+		} else if paths := m.fileSuggestionsFor(); len(paths) > 0 {
+			below = append(below, splitRows(renderFileSuggestions(paths, m.mentionIndex, width))...)
+		} else if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
+			below = append(below, splitRows(renderSlashSuggestions(suggestions, m.cmdSuggestIndex, width))...)
+		}
+
+		// A block taller than the window would push the frame past the top
+		// of the screen, and what goes is the transcript. So the extras give
+		// way first — the panels above the prompt, then the tail of whatever
+		// is listed below it — keeping one row of transcript, the separator,
+		// the prompt and the status line.
+		if m.height > 0 {
+			room := m.height - 1 - len(rows) - 1 - 1 - len(prompt)
+			below = below[:min(len(below), max(0, room))]
+			room -= len(below)
+			above = above[max(0, len(above)-max(0, room)):]
+		}
+
+		rows = append(rows, above...)
 		rows = append(rows, styleDim.Render(strings.Repeat("─", width)))
 		cursorRow, cursorCol = len(rows), lipgloss.Width(promptMarker)
-		rows = append(rows, splitRows(stylePrompt.Render(promptMarker)+m.input.View())...)
-		rows = append(rows, m.renderQueued(width)...)
-		if line := m.searchLine(); line != "" {
-			rows = append(rows, splitRows(line)...)
-		} else if paths := m.fileSuggestionsFor(); len(paths) > 0 {
-			rows = append(rows, splitRows(renderFileSuggestions(paths, m.mentionIndex, width))...)
-		} else if suggestions := m.slashSuggestions(); len(suggestions) > 0 {
-			rows = append(rows, splitRows(renderSlashSuggestions(suggestions, m.cmdSuggestIndex, width))...)
-		}
+		rows = append(rows, prompt...)
+		rows = append(rows, below...)
 	}
 
 	return append(rows, m.statusLine()), cursorRow, cursorCol
@@ -1320,7 +1360,7 @@ func (m *Model) viewportBlock(width, height int) []string {
 // transcriptRows is the transcript plus the sentence currently streaming,
 // which is shown in place at the end rather than in a region of its own.
 func (m *Model) transcriptRows(width int) []string {
-	rows := m.transcript.render(width)
+	rows := m.transcript.screen(width)
 	if m.tail == "" {
 		return rows
 	}
@@ -1328,7 +1368,7 @@ func (m *Model) transcriptRows(width int) []string {
 	// transcript's own cache, and growing it would write into it.
 	out := make([]string, 0, len(rows)+1)
 	out = append(out, rows...)
-	return append(out, splitRows(m.renderTail())...)
+	return append(out, wrapStyled(m.renderTail(), width)...)
 }
 
 // scrollOffset is the first transcript row visible in a window of the given
@@ -1575,6 +1615,15 @@ var welcomePrompts = []string{
 	"explain this repository",
 	"fix the failing test",
 	"add a README",
+}
+
+// windowTitle names the terminal tab or window: the kiwi, then the project,
+// so a row of tabs says which one is which.
+func windowTitle(workDir string) string {
+	if workDir == "" {
+		return "🥝 kiwi"
+	}
+	return "🥝 kiwi · " + filepath.Base(workDir)
 }
 
 func banner(model, workDir string) string {
@@ -1892,6 +1941,9 @@ func (m *Model) applyRebuild(ctx context.Context) {
 var keybindRows = [][2]string{
 	{"/ (typing)", "autocomplete commands as you type"},
 	{"↑ ↓", "recall an earlier prompt"},
+	{"wheel pgup", "scroll the conversation"},
+	{"shift+enter", "new line (or ctrl+j)"},
+	{"option-drag", "select text (fn-drag in Terminal.app)"},
 	{"ctrl+r", "search earlier prompts"},
 	{"ctrl+t", "show or hide the task list"},
 	{"!command", "run a shell command without a turn"},

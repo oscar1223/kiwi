@@ -94,8 +94,8 @@ func TestSubmitReturnsToTheBottom(t *testing.T) {
 	}
 }
 
-// The wheel reaches us as bare arrows, so they scroll — unless the prompt has
-// another line of its own to move onto.
+// Bare arrows scroll the transcript, unless the prompt has another line of
+// its own to move onto.
 func TestArrowsScrollOnlyWhenTheInputCannotUseThem(t *testing.T) {
 	m := scrolled(t)
 
