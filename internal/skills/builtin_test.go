@@ -210,8 +210,8 @@ func TestEveryBuiltInParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 6 {
-		t.Errorf("found %d built-in skills, want the 6 that are meant to ship", len(entries))
+	if len(entries) != 7 {
+		t.Errorf("found %d built-in skills, want the 7 that are meant to ship", len(entries))
 	}
 	names := BuiltinNames()
 	for _, e := range entries {

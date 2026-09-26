@@ -225,6 +225,7 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 	}
 	extraTools = append(extraTools,
 		tools.WebFetch{Perms: broker},
+		tools.WebSearch{Perms: broker},
 		tools.BackgroundBash{WorkDir: cwd, Perms: broker, Procs: procs},
 		tools.BackgroundOutput{Procs: procs},
 		tools.KillShell{Procs: procs},
@@ -253,6 +254,10 @@ func assembleAgent(ctx context.Context, provider llm.Provider, cwd string, mode 
 		tools.Grep{FS: exploreFS},
 		tools.List{FS: exploreFS},
 		tools.ReadOnlyBash{Bash: tools.Bash{WorkDir: cwd, Perms: broker}},
+		// Reading the web changes nothing either, and an investigation
+		// often ends in someone else's documentation.
+		tools.WebFetch{Perms: broker},
+		tools.WebSearch{Perms: broker},
 	)
 
 	// Registered after the generalTools snapshot above, alongside task and for

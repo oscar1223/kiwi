@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"syscall"
 	"time"
@@ -87,14 +88,28 @@ func fetchClient() *http.Client {
 type WebFetch struct {
 	Perms  *permission.Broker
 	Client *http.Client
+	// ReaderBase is where reader mode sends the URL. Empty means Jina
+	// Reader; the tests point it at their own server.
+	ReaderBase string
 }
+
+// jinaReader renders a page in a real browser and returns it as markdown,
+// which is what gets a page built by JavaScript read at all.
+const jinaReader = "https://r.jina.ai/"
+
+// thinPage is how little text an HTML page can yield before it probably
+// needed JavaScript to fill itself in.
+const thinPage = 200
 
 func (WebFetch) Name() string { return "web_fetch" }
 
 func (WebFetch) Description() string {
 	return "Fetch a URL and return its content as readable text, with HTML stripped. " +
 		"Use it to read documentation, an API reference or a raw file from a " +
-		"repository. It reaches public addresses only."
+		"repository. It reaches public addresses only. Set reader to true for " +
+		"pages built by JavaScript, or when a plain fetch comes back nearly " +
+		"empty: the URL is then rendered by Jina Reader (r.jina.ai), a third-" +
+		"party service, and returned as markdown."
 }
 
 func (WebFetch) Schema() map[string]any {
@@ -102,6 +117,10 @@ func (WebFetch) Schema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"url": map[string]any{"type": "string", "description": "Absolute http:// or https:// URL."},
+			"reader": map[string]any{
+				"type":        "boolean",
+				"description": "Render the page through Jina Reader and return markdown. Sends the URL to r.jina.ai.",
+			},
 		},
 		"required": []string{"url"},
 	}
@@ -109,65 +128,115 @@ func (WebFetch) Schema() map[string]any {
 
 func (t WebFetch) Run(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		Reader bool   `json:"reader"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	target := strings.TrimSpace(in.URL)
-	if target == "" {
-		return "", fmt.Errorf("url is required")
-	}
-	u, err := url.Parse(target)
+	u, err := parseWebURL(in.URL)
 	if err != nil {
-		return "", fmt.Errorf("bad url %q: %w", target, err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("web_fetch only speaks http and https, not %q", u.Scheme)
-	}
-	if u.Host == "" {
-		return "", fmt.Errorf("url %q has no host", target)
+		return "", err
 	}
 
+	// Reader mode says so in the prompt: the page is still the one asked
+	// for, but the request goes to someone else first.
+	detail := u.String()
+	if in.Reader {
+		detail += " (via r.jina.ai)"
+	}
 	if t.Perms != nil {
 		if err := t.Perms.Ask(ctx, permission.Action{
 			Name:   permission.ActionFetch,
-			Detail: u.String(),
+			Detail: detail,
 		}); err != nil {
 			return "", err
 		}
 	}
 
+	if in.Reader {
+		base := t.ReaderBase
+		if base == "" {
+			base = jinaReader
+		}
+		headers := map[string]string{"X-Return-Format": "markdown"}
+		if key := os.Getenv("JINA_API_KEY"); key != "" {
+			headers["Authorization"] = "Bearer " + key
+		}
+		text, truncated, err := t.get(ctx, base+u.String(), headers)
+		if err != nil {
+			return "", err
+		}
+		return fetched(u, text, truncated, ""), nil
+	}
+
+	text, truncated, err := t.get(ctx, u.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	var hint string
+	if len(text) < thinPage {
+		hint = "(very little text came back: the page may be built by JavaScript. " +
+			"Try again with reader: true.)"
+	}
+	return fetched(u, text, truncated, hint), nil
+}
+
+// parseWebURL checks that raw is an absolute http or https URL.
+func parseWebURL(raw string) (*url.URL, error) {
+	target := strings.TrimSpace(raw)
+	if target == "" {
+		return nil, fmt.Errorf("url is required")
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return nil, fmt.Errorf("bad url %q: %w", target, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("web_fetch only speaks http and https, not %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("url %q has no host", target)
+	}
+	return u, nil
+}
+
+// get fetches target through the guarded client and returns its readable
+// text, and whether it was cut at the size cap.
+func (t WebFetch) get(ctx context.Context, target string, headers map[string]string) (string, bool, error) {
 	client := t.Client
 	if client == nil {
 		client = fetchClient()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	req.Header.Set("User-Agent", fetchUserAgent)
 	req.Header.Set("Accept", "text/html,text/plain,application/json;q=0.9,*/*;q=0.5")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetching %s: %w", u, err)
+		return "", false, fmt.Errorf("fetching %s: %w", target, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("%s returned %s", u, resp.Status)
+		return "", false, fmt.Errorf("%s returned %s", target, resp.Status)
 	}
 
 	ctype := resp.Header.Get("Content-Type")
 	if !isTextual(ctype) {
-		return "", fmt.Errorf("%s is %s, which is not text", u, firstToken(ctype))
+		return "", false, fmt.Errorf("%s is %s, which is not text", target, firstToken(ctype))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("reading %s: %w", u, err)
+		return "", false, fmt.Errorf("reading %s: %w", target, err)
 	}
 	truncated := len(body) > maxFetchBytes
 	if truncated {
@@ -180,18 +249,24 @@ func (t WebFetch) Run(ctx context.Context, input json.RawMessage) (string, error
 		// is here for the prose, not the div soup.
 		text = htmlToText(text)
 	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return fmt.Sprintf("(%s returned no readable text)", u), nil
-	}
+	return strings.TrimSpace(text), truncated, nil
+}
 
+// fetched formats what a fetch returns to the model.
+func fetched(u *url.URL, text string, truncated bool, hint string) string {
+	if text == "" {
+		text = "(no readable text)"
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", u)
 	b.WriteString(text)
 	if truncated {
 		fmt.Fprintf(&b, "\n\n… (truncated at %d KB)", maxFetchBytes/1024)
 	}
-	return b.String(), nil
+	if hint != "" {
+		b.WriteString("\n\n" + hint)
+	}
+	return b.String()
 }
 
 // isTextual reports whether a content type is worth reading as text.
