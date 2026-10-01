@@ -429,6 +429,7 @@ kiwi siempre ganan — una skill llamada `clear` no puede secuestrar `/clear`.
 | `ctrl+r` | busca entre los prompts anteriores |
 | `@` | selector difuso de ficheros — `@tumod` encuentra `internal/tui/model.go` |
 | `!comando` | ejecuta en la shell sin gastar un turno |
+| arrastrar con el ratón | selecciona texto de la conversación y lo copia al portapapeles al soltar |
 | `ctrl+t` | muestra u oculta la lista de tareas del modelo |
 | `ctrl+e` | redacta el prompt en `$EDITOR` |
 | `?` | panel de atajos, con el input vacío |
