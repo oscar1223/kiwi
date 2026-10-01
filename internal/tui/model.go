@@ -93,6 +93,10 @@ type Model struct {
 	scroll     int
 	follow     bool
 
+	// sel is the text being selected with the mouse, or the last selection
+	// still highlighted. See selection.go.
+	sel *selection
+
 	history []llm.Message
 	// sessionUsage accumulates token usage across every turn of this TUI
 	// session (not the provider's own lifetime total) — "how much have I
@@ -212,6 +216,13 @@ func New(opts Options) *Model {
 	// leaves no inverted cell behind to confuse a mouse selection. View is
 	// what places it, since a cursor is positioned against the whole frame.
 	ta.SetVirtualCursor(false)
+	// The widget paints the line the cursor is on with a background of its
+	// own — black on a dark terminal — which shows up as a bar behind the text
+	// on any terminal whose background is not exactly that black.
+	st := ta.Styles()
+	st.Focused.CursorLine = lipgloss.NewStyle()
+	st.Blurred.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(st)
 	ta.Focus()
 
 	sp := spinner.New()
@@ -273,6 +284,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resize()
+		// A selection is held in rows of the old layout.
+		m.sel = nil
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -280,6 +293,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		return m, m.onPaste(msg)
+
+	case tea.MouseClickMsg:
+		m.onMouseClick(msg)
+		return m, nil
+
+	case tea.MouseMotionMsg:
+		m.onMouseMotion(msg)
+		return m, nil
+
+	case tea.MouseReleaseMsg:
+		return m, m.onMouseRelease()
 
 	case tea.MouseWheelMsg:
 		// The wheel only ever scrolls the conversation. It used to arrive as
@@ -501,6 +525,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	key := msg.String()
+	// Typing moves on from whatever was selected.
+	m.sel = nil
 
 	// A pending permission prompt captures the keyboard: nothing else should
 	// happen while a tool is blocked waiting for an answer.
@@ -1291,9 +1317,10 @@ func (m *Model) View() tea.View {
 	v.AltScreen = true
 	// Captured so the wheel is a real wheel event and always scrolls the
 	// transcript. Uncaptured, the terminal sent it as arrow keys, which could
-	// not be told apart from the ones that recall earlier prompts. Selecting
-	// text still works with the terminal's bypass modifier (option in iTerm2
-	// and Ghostty, fn in Terminal.app).
+	// not be told apart from the ones that recall earlier prompts. It also
+	// takes selection away from the terminal, so Kiwi does that itself (see
+	// selection.go); the terminal's own is still there behind its bypass
+	// modifier (option in iTerm2 and Ghostty, fn in Terminal.app).
 	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = windowTitle(m.opts.WorkDir)
 
@@ -1358,7 +1385,17 @@ func (m *Model) bottomBlock(width int) (rows []string, cursorRow, cursorCol int)
 		cursorRow, cursorCol = len(rows)-1, gutter
 	default:
 		above := append(m.renderShortcuts(width), m.renderTodos(width)...)
-		prompt := splitRows(stylePrompt.Render(promptMarker) + m.input.View())
+		// Only the first row carries the marker. The rest are indented by
+		// its width so every line of the input starts in the same column,
+		// which is the column the cursor is offset to below.
+		prompt := splitRows(m.input.View())
+		for i, row := range prompt {
+			if i == 0 {
+				prompt[i] = stylePrompt.Render(promptMarker) + row
+			} else {
+				prompt[i] = strings.Repeat(" ", lipgloss.Width(promptMarker)) + row
+			}
+		}
 		below := m.renderQueued(width)
 		if line := m.searchLine(); line != "" {
 			below = append(below, splitRows(line)...)
@@ -1401,6 +1438,9 @@ func (m *Model) viewportBlock(width, height int) []string {
 	for i := range out {
 		if src := start + i; src < len(content) {
 			out[i] = content[src]
+			if m.sel != nil {
+				out[i] = m.sel.highlight(out[i], src)
+			}
 		}
 	}
 	return out
@@ -1609,6 +1649,9 @@ func (m *Model) statusLine() string {
 	line := strings.Join(parts, styleDim.Render(" · "))
 	width := m.termWidth()
 	hint := styleDim.Render("shift+tab: mode")
+	if m.sel != nil && m.sel.copied > 0 {
+		hint = styleTool.Render(sprintf("copied %d chars", m.sel.copied))
+	}
 	gap := width - lipgloss.Width(line) - lipgloss.Width(hint)
 	if gap < 1 {
 		// Too narrow for both: the state is worth more than the shortcut, so
@@ -2014,7 +2057,7 @@ var keybindRows = [][2]string{
 	{"↑ ↓", "recall an earlier prompt"},
 	{"wheel pgup", "scroll the conversation"},
 	{"shift+enter", "new line (or ctrl+j)"},
-	{"option-drag", "select text (fn-drag in Terminal.app)"},
+	{"drag", "select text and copy it"},
 	{"ctrl+r", "search earlier prompts"},
 	{"ctrl+t", "show or hide the task list"},
 	{"!command", "run a shell command without a turn"},

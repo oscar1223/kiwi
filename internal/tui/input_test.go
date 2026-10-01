@@ -115,3 +115,42 @@ func TestWindowTitle(t *testing.T) {
 		t.Errorf("windowTitle = %q", got)
 	}
 }
+
+// The input draws no background of its own. The widget's default paints the
+// cursor's line black, which is a visible bar on any other terminal colour.
+func TestInputHasNoBackground(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.Update(key("a"))
+
+	st := m.input.Styles()
+	for name, s := range map[string]lipgloss.Style{
+		"focused": st.Focused.CursorLine, "blurred": st.Blurred.CursorLine,
+	} {
+		if _, unset := s.GetBackground().(lipgloss.NoColor); !unset {
+			t.Errorf("%s cursor line has a background: %v", name, s.GetBackground())
+		}
+	}
+}
+
+// Every line of the input starts in the column the cursor is offset to. The
+// marker is only on the first row, and without the indent the rest began two
+// columns to the left of where the cursor was drawn.
+func TestCursorSitsOnTheTextOfEveryLine(t *testing.T) {
+	m, _ := newTestModel(t, permission.ModeAsk)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.Update(key("a"))
+	m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
+	for _, r := range "bcd" {
+		m.Update(key(string(r)))
+	}
+
+	v := m.View()
+	if v.Cursor == nil {
+		t.Fatal("no cursor")
+	}
+	row := plain(strings.Split(v.Content, "\n")[v.Cursor.Y])
+	if got := strings.Index(row, "bcd") + len("bcd"); got != v.Cursor.X {
+		t.Errorf("cursor at column %d, the text ends at column %d: %q", v.Cursor.X, got, row)
+	}
+}
