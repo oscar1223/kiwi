@@ -26,7 +26,10 @@ const (
 )
 
 func newServeCmd(g *globalFlags) *cobra.Command {
-	var mode string
+	var (
+		mode            string
+		approvalTimeout time.Duration
+	)
 
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -44,8 +47,10 @@ is ignored without a reply. The bot polls Telegram, so no port is opened.
 Each message is a task for the agent, working in the current directory (or
 --cwd) and answering when it is done. Meanwhile one message is kept up to date
 with the tools it runs. It runs in work mode by default: it edits
-files and runs commands without asking, and anything the mode would ask about,
-such as a dangerous command, is refused. Use --mode plan to keep it read-only.
+files and runs commands without asking. Anything the mode would still ask
+about, such as a dangerous command, arrives as a message with Allow and Deny
+buttons; with no answer before --approval-timeout it is refused. Use --mode
+plan to keep it read-only.
 
 It carries on the most recent conversation for the directory, so a restart
 does not lose the thread. Send /new to start over.`,
@@ -55,15 +60,17 @@ does not lose the thread. Send /new to start over.`,
 			if !m.Valid() {
 				return fmt.Errorf("unknown mode %q (want ask, plan or work)", mode)
 			}
-			return runServe(cmd.Context(), g, m, os.Getenv, cmd.ErrOrStderr())
+			return runServe(cmd.Context(), g, m, approvalTimeout, os.Getenv, cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().StringVar(&mode, "mode", string(permission.ModeWork),
 		"permission mode: ask, plan (read-only) or work")
+	cmd.Flags().DurationVar(&approvalTimeout, "approval-timeout", remote.DefaultApprovalTimeout,
+		"how long to wait for an Allow/Deny answer before refusing")
 	return cmd
 }
 
-func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, getenv func(string) string, out io.Writer) error {
+func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, approvalTimeout time.Duration, getenv func(string) string, out io.Writer) error {
 	token := getenv(envTelegramToken)
 	if token == "" {
 		return fmt.Errorf("%s is not set; create a bot with @BotFather and put its token there", envTelegramToken)
@@ -105,7 +112,8 @@ func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, getenv 
 		return err
 	}
 
-	rs, err := newServeSession(ctx, g, mode, logf)
+	approver := &remote.Approver{Timeout: approvalTimeout}
+	rs, err := newServeSession(ctx, g, mode, approver, logf)
 	if err != nil {
 		return err
 	}
@@ -116,6 +124,7 @@ func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, getenv 
 
 	bot := remote.NewBot(client, allowed, rs.Handle)
 	bot.Log = logf
+	bot.OnCallback = approver.HandleCallback
 	if err := bot.Run(ctx); err != nil {
 		return err
 	}
@@ -135,16 +144,15 @@ func (s *serveSession) Close() error { return s.run.Close() }
 // newServeSession builds the agent the bot talks to. It continues the most
 // recent conversation for the directory unless --resume names another, so a
 // restart picks up where it left off.
-func newServeSession(ctx context.Context, g *globalFlags, mode permission.Mode, logf func(string)) (*serveSession, error) {
+func newServeSession(ctx context.Context, g *globalFlags, mode permission.Mode, approver *remote.Approver, logf func(string)) (*serveSession, error) {
 	flags := *g
 	if flags.resumeID == "" {
 		flags.continueLast = true
 	}
 
-	// Nobody can answer a question from here yet (buttons are #11), so
-	// whatever the mode does not settle on its own is refused. In work mode
-	// that is only the dangerous commands.
-	rs, err := newSession(ctx, &flags, mode, permission.NonInteractive{})
+	// Whatever the mode does not settle on its own is asked on Telegram, with
+	// buttons. In work mode that is only the dangerous commands.
+	rs, err := newSession(ctx, &flags, mode, approver)
 	if err != nil {
 		return nil, err
 	}
@@ -160,10 +168,11 @@ func newServeSession(ctx context.Context, g *globalFlags, mode permission.Mode, 
 	})
 
 	s := &remote.Session{
-		Agent:   rs.agent,
-		WorkDir: rs.workDir,
-		History: rs.history,
-		Log:     logf,
+		Agent:    rs.agent,
+		WorkDir:  rs.workDir,
+		Approver: approver,
+		History:  rs.history,
+		Log:      logf,
 		Save: func(ctx context.Context, turn []llm.Message) ([]llm.Message, error) {
 			return session.Persist(ctx, rs.store, rs.meta.ID, rs.agent.Provider, turn)
 		},

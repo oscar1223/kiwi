@@ -17,8 +17,9 @@ type Handler func(ctx context.Context, msg Message, conv Conversation) string
 
 // Conversation is the chat a Handler is answering.
 type Conversation interface {
-	// Send posts a message and returns its ID, for Edit.
-	Send(ctx context.Context, text string) (int64, error)
+	// Send posts a message and returns its ID, for Edit. buttons, if any,
+	// are shown under it, one row each.
+	Send(ctx context.Context, text string, buttons ...[]Button) (int64, error)
 	// Edit replaces the text of a message Send returned.
 	Edit(ctx context.Context, messageID int64, text string) error
 }
@@ -29,9 +30,13 @@ type botChat struct {
 	chatID int64
 }
 
-func (c botChat) Send(ctx context.Context, text string) (int64, error) {
-	return c.b.send(ctx, c.chatID, text)
+func (c botChat) Send(ctx context.Context, text string, buttons ...[]Button) (int64, error) {
+	return c.b.send(ctx, c.chatID, text, buttons...)
 }
+
+// CallbackHandler handles a button press from an allowed user and returns
+// the short notice Telegram shows to whoever pressed it.
+type CallbackHandler func(ctx context.Context, q CallbackQuery) string
 
 func (c botChat) Edit(ctx context.Context, messageID int64, text string) error {
 	return c.b.client.EditMessageText(ctx, c.chatID, messageID, text)
@@ -49,6 +54,8 @@ type Bot struct {
 	// Log reports what the bot is doing, for the operator's terminal. Never
 	// shown to Telegram users. May be nil.
 	Log func(string)
+	// OnCallback handles button presses. May be nil.
+	OnCallback CallbackHandler
 
 	pollTimeout time.Duration
 	minBackoff  time.Duration
@@ -130,6 +137,10 @@ func (b *Bot) Run(ctx context.Context) error {
 // user. Everything else is dropped without a reply, so a stranger cannot even
 // confirm the bot is running.
 func (b *Bot) dispatch(ctx context.Context, u Update) {
+	if q := u.CallbackQuery; q != nil {
+		b.dispatchCallback(ctx, *q)
+		return
+	}
 	msg := u.Message
 	if msg == nil || msg.From == nil || msg.Text == "" {
 		return
@@ -159,11 +170,29 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 	}
 }
 
+// dispatchCallback hands a button press to OnCallback. The allowed list is
+// checked again here: a button is a message like any other, and what matters
+// is who pressed it, not who the message was sent to.
+func (b *Bot) dispatchCallback(ctx context.Context, q CallbackQuery) {
+	if !b.allowed[q.From.ID] {
+		b.logf("ignored a button press from user %d (not in the allowed list)", q.From.ID)
+		return
+	}
+	notice := ""
+	if b.OnCallback != nil {
+		notice = b.OnCallback(ctx, q)
+	}
+	// Always answered, or the button keeps spinning on the phone.
+	if err := b.client.AnswerCallbackQuery(ctx, q.ID, notice); err != nil && ctx.Err() == nil {
+		b.logf("could not answer a button press: %v", err)
+	}
+}
+
 // send delivers one message, waiting out Telegram's rate limit when it asks
 // to: a long answer is several messages in a row, which is what trips it.
-func (b *Bot) send(ctx context.Context, chatID int64, text string) (int64, error) {
+func (b *Bot) send(ctx context.Context, chatID int64, text string, buttons ...[]Button) (int64, error) {
 	for attempt := 0; ; attempt++ {
-		id, err := b.client.SendMessage(ctx, chatID, text)
+		id, err := b.client.SendMessage(ctx, chatID, text, buttons...)
 		var apiErr *APIError
 		if !errors.As(err, &apiErr) || apiErr.RetryAfter <= 0 || attempt == 3 {
 			return id, err

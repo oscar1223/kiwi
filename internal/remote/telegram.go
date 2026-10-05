@@ -60,10 +60,30 @@ type Message struct {
 	Text      string `json:"text,omitempty"`
 }
 
-// Update is one event from getUpdates. Only messages are requested.
+// CallbackQuery is a press on an inline keyboard button.
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    User     `json:"from"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data,omitempty"`
+}
+
+// Update is one event from getUpdates: a message or a button press.
 type Update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *Message `json:"message,omitempty"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+}
+
+// Button is one inline keyboard button. Data comes back in the CallbackQuery
+// when it is pressed; Telegram allows at most 64 bytes.
+type Button struct {
+	Text string `json:"text"`
+	Data string `json:"callback_data"`
+}
+
+type inlineKeyboard struct {
+	Rows [][]Button `json:"inline_keyboard"`
 }
 
 // APIError is a request Telegram answered with ok=false.
@@ -155,7 +175,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 		Offset         int64    `json:"offset,omitempty"`
 		Timeout        int      `json:"timeout"`
 		AllowedUpdates []string `json:"allowed_updates"`
-	}{offset, int(timeout / time.Second), []string{"message"}}
+	}{offset, int(timeout / time.Second), []string{"message", "callback_query"}}
 
 	var updates []Update
 	err := c.call(ctx, "getUpdates", params, &updates)
@@ -163,17 +183,33 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 }
 
 // SendMessage sends plain text to a chat and returns the new message's ID.
-func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) (int64, error) {
+// buttons, if any, are shown under it as an inline keyboard, one row each.
+func (c *Client) SendMessage(ctx context.Context, chatID int64, text string, buttons ...[]Button) (int64, error) {
 	params := struct {
-		ChatID int64  `json:"chat_id"`
-		Text   string `json:"text"`
-	}{chatID, text}
+		ChatID      int64           `json:"chat_id"`
+		Text        string          `json:"text"`
+		ReplyMarkup *inlineKeyboard `json:"reply_markup,omitempty"`
+	}{ChatID: chatID, Text: text}
+	if len(buttons) > 0 {
+		params.ReplyMarkup = &inlineKeyboard{Rows: buttons}
+	}
 	var sent Message
 	err := c.call(ctx, "sendMessage", params, &sent)
 	return sent.MessageID, err
 }
 
-// EditMessageText replaces the text of a message the bot sent.
+// AnswerCallbackQuery acknowledges a button press, so the client stops
+// showing it as pending. text, if set, is shown briefly to whoever pressed.
+func (c *Client) AnswerCallbackQuery(ctx context.Context, id, text string) error {
+	params := struct {
+		ID   string `json:"callback_query_id"`
+		Text string `json:"text,omitempty"`
+	}{id, text}
+	return c.call(ctx, "answerCallbackQuery", params, nil)
+}
+
+// EditMessageText replaces the text of a message the bot sent. Any inline
+// keyboard the message had is removed.
 func (c *Client) EditMessageText(ctx context.Context, chatID, messageID int64, text string) error {
 	params := struct {
 		ChatID    int64  `json:"chat_id"`

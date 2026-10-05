@@ -262,8 +262,10 @@ en marcha.
 
 4. `kiwi serve` desde el directorio del proyecto.
 
-Va en modo `work`: edita ficheros y ejecuta comandos sin preguntar, y lo que el modo
-pediría confirmar (un `rm -rf`, un `sudo`…) se deniega. `--mode plan` lo deja en solo
+Va en modo `work`: edita ficheros y ejecuta comandos sin preguntar. Lo que el modo aún
+pediría confirmar (un `rm -rf`, un `sudo`, un force push…) te llega como mensaje con
+botones **Permitir** y **Denegar**; si no contestas en 5 minutos (`--approval-timeout`),
+se deniega. `--mode plan` lo deja en solo
 lectura. Sigue la última conversación del directorio, así que reiniciarlo no pierde el
 hilo; `/new` empieza una nueva. Solo hace una tarea a la vez: si le escribes mientras
 trabaja, te dice que está ocupado.
