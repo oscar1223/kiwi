@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,12 +23,13 @@ func Echo(_ context.Context, msg Message) string { return msg.Text }
 type fakeAPI struct {
 	t *testing.T
 
-	mu       sync.Mutex
-	updates  []Update
-	sent     []sentMessage
-	failNext int // getUpdates calls to answer with HTTP 502 first
-	polls    int
-	offsets  []int64
+	mu        sync.Mutex
+	updates   []Update
+	sent      []sentMessage
+	failNext  int // getUpdates calls to answer with HTTP 502 first
+	limitNext int // sendMessage calls to answer with 429 first
+	polls     int
+	offsets   []int64
 
 	srv *httptest.Server
 }
@@ -116,6 +118,16 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		var m sentMessage
 		json.NewDecoder(r.Body).Decode(&m)
 		f.mu.Lock()
+		if f.limitNext > 0 {
+			f.limitNext--
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(map[string]any{
+				"ok": false, "error_code": 429, "description": "Too Many Requests: retry after 1",
+				"parameters": map[string]any{"retry_after": 1},
+			})
+			return
+		}
 		f.sent = append(f.sent, m)
 		f.mu.Unlock()
 		f.reply(w, map[string]any{"message_id": 1})
@@ -358,29 +370,6 @@ func TestParseUserIDs(t *testing.T) {
 	}
 }
 
-func TestFitMessage(t *testing.T) {
-	short := strings.Repeat("a", 100)
-	if got := fitMessage(short); got != short {
-		t.Error("a short message should pass unchanged")
-	}
-
-	exact := strings.Repeat("a", maxMessage)
-	if got := fitMessage(exact); got != exact {
-		t.Error("a message of exactly 4096 characters fits and should pass unchanged")
-	}
-
-	for _, unit := range []string{"a", "ñ", "🥝"} {
-		long := strings.Repeat(unit, 5000)
-		got := fitMessage(long)
-		if !strings.HasSuffix(got, "[…respuesta recortada]") {
-			t.Errorf("%q x5000: missing the truncation marker", unit)
-		}
-		if n := utf16Len(got); n > maxMessage {
-			t.Errorf("%q x5000: cut to %d UTF-16 units, over Telegram's %d", unit, n, maxMessage)
-		}
-	}
-}
-
 func TestSlowHandlerDoesNotBlockPolling(t *testing.T) {
 	api := newFakeAPI(t)
 	release := make(chan struct{})
@@ -416,5 +405,53 @@ func TestSlowHandlerDoesNotBlockPolling(t *testing.T) {
 	}
 	if !got["rápido"] || !got["terminé"] {
 		t.Errorf("replies = %+v, want both", api.sentMessages())
+	}
+}
+
+func TestLongReplyArrivesInOrder(t *testing.T) {
+	api := newFakeAPI(t)
+	var long strings.Builder
+	for i := range 300 {
+		fmt.Fprintf(&long, "Línea %03d de una respuesta muy larga del agente.\n", i)
+	}
+	reply := long.String() // ~15.000 caracteres
+	b := NewBot(api.client(), []int64{42}, func(context.Context, Message) string { return reply })
+	api.queue(textUpdate(1, 42, "private", "cuéntamelo todo"))
+
+	stop := runBot(t, b)
+	waitFor(t, "every chunk", func() bool { return len(api.sentMessages()) >= 4 })
+	stop()
+
+	sent := api.sentMessages()
+	var got []string
+	for _, m := range sent {
+		if n := utf16Len(m.Text); n > maxMessage {
+			t.Errorf("sent a message of %d units, over Telegram's limit", n)
+		}
+		got = append(got, m.Text)
+	}
+	if strings.Join(got, "\n") != strings.TrimRight(reply, "\n") {
+		t.Error("the chunks, joined in the order sent, are not the original answer")
+	}
+}
+
+func TestWaitsOutRateLimit(t *testing.T) {
+	api := newFakeAPI(t)
+	api.limitNext = 1
+	api.queue(textUpdate(1, 42, "private", "hola"))
+
+	start := time.Now()
+	stop := runBot(t, testBot(api, 42))
+	deadline := time.Now().Add(3 * time.Second)
+	for len(api.sentMessages()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop()
+
+	if len(api.sentMessages()) != 1 {
+		t.Fatal("the reply was dropped after a 429 instead of retried")
+	}
+	if waited := time.Since(start); waited < time.Second {
+		t.Errorf("retried after %s; Telegram asked for 1s", waited)
 	}
 }

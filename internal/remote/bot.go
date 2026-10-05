@@ -125,48 +125,32 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 	if reply == "" || ctx.Err() != nil {
 		return
 	}
-	if err := b.client.SendMessage(ctx, msg.Chat.ID, fitMessage(reply)); err != nil && ctx.Err() == nil {
-		b.logf("could not reply to user %d: %v", msg.From.ID, err)
-	}
-}
-
-// maxMessage is Telegram's limit per message. Longer text is rejected whole,
-// not truncated, so it has to be cut here.
-const maxMessage = 4096
-
-// fitMessage cuts text to what one message can carry. Splitting a long answer
-// across several messages is #9; until then the end is dropped and marked.
-// Telegram counts UTF-16 code units, so the margin covers characters outside
-// the BMP (emoji), which count twice.
-func fitMessage(text string) string {
-	if utf16Len(text) <= maxMessage {
-		return text
-	}
-	const marker = "\n\n[…respuesta recortada]"
-	budget := maxMessage - utf16Len(marker)
-	units := 0
-	for i, c := range text {
-		if units+utf16Units(c) > budget {
-			return text[:i] + marker
+	chunks := splitMessage(reply, maxMessage)
+	for i, chunk := range chunks {
+		if err := b.send(ctx, msg.Chat.ID, chunk); err != nil {
+			if ctx.Err() == nil {
+				b.logf("could not reply to user %d (message %d of %d): %v", msg.From.ID, i+1, len(chunks), err)
+			}
+			return
 		}
-		units += utf16Units(c)
 	}
-	return text
 }
 
-func utf16Len(s string) int {
-	n := 0
-	for _, c := range s {
-		n += utf16Units(c)
+// send delivers one message, waiting out Telegram's rate limit when it asks
+// to: a long answer is several messages in a row, which is what trips it.
+func (b *Bot) send(ctx context.Context, chatID int64, text string) error {
+	for attempt := 0; ; attempt++ {
+		err := b.client.SendMessage(ctx, chatID, text)
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.RetryAfter <= 0 || attempt == 3 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(apiErr.RetryAfter):
+		}
 	}
-	return n
-}
-
-func utf16Units(c rune) int {
-	if c > 0xFFFF {
-		return 2
-	}
-	return 1
 }
 
 // ParseUserIDs parses a comma- or space-separated list of Telegram user IDs.
