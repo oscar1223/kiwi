@@ -42,7 +42,8 @@ Only the allowed users get an answer, and only in a private chat: anyone else
 is ignored without a reply. The bot polls Telegram, so no port is opened.
 
 Each message is a task for the agent, working in the current directory (or
---cwd) and answering when it is done. It runs in work mode by default: it edits
+--cwd) and answering when it is done. Meanwhile one message is kept up to date
+with the tools it runs. It runs in work mode by default: it edits
 files and runs commands without asking, and anything the mode would ask about,
 such as a dangerous command, is refused. Use --mode plan to keep it read-only.
 

@@ -247,7 +247,8 @@ comandos sin pedir confirmación.
 
 Kiwi como bot de Telegram, para mandarle tareas desde el móvil. Cada mensaje es una
 tarea para el agente, que trabaja en el directorio donde lo arrancas (o `--cwd`) y te
-contesta al terminar. Es la épica [#6](https://github.com/oscar1223/kiwi/issues/6), aún
+contesta al terminar. Mientras, un mensaje se va actualizando con lo que hace
+(`● bash: go test ./...`), y las respuestas largas llegan en varios mensajes. Es la épica [#6](https://github.com/oscar1223/kiwi/issues/6), aún
 en marcha.
 
 1. Crea un bot con [@BotFather](https://t.me/BotFather) y copia su token.

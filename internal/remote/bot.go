@@ -11,8 +11,31 @@ import (
 )
 
 // Handler answers one message from an allowed user. An empty reply sends
-// nothing.
-type Handler func(ctx context.Context, msg Message) string
+// nothing. conv lets it post and edit messages in that chat while it works,
+// before the reply.
+type Handler func(ctx context.Context, msg Message, conv Conversation) string
+
+// Conversation is the chat a Handler is answering.
+type Conversation interface {
+	// Send posts a message and returns its ID, for Edit.
+	Send(ctx context.Context, text string) (int64, error)
+	// Edit replaces the text of a message Send returned.
+	Edit(ctx context.Context, messageID int64, text string) error
+}
+
+// botChat is a Conversation bound to one Telegram chat.
+type botChat struct {
+	b      *Bot
+	chatID int64
+}
+
+func (c botChat) Send(ctx context.Context, text string) (int64, error) {
+	return c.b.send(ctx, c.chatID, text)
+}
+
+func (c botChat) Edit(ctx context.Context, messageID int64, text string) error {
+	return c.b.client.EditMessageText(ctx, c.chatID, messageID, text)
+}
 
 // Bot long-polls Telegram and hands messages from allowed users to a Handler.
 //
@@ -121,13 +144,13 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 		return
 	}
 
-	reply := b.handle(ctx, *msg)
+	reply := b.handle(ctx, *msg, botChat{b, msg.Chat.ID})
 	if reply == "" || ctx.Err() != nil {
 		return
 	}
 	chunks := splitMessage(reply, maxMessage)
 	for i, chunk := range chunks {
-		if err := b.send(ctx, msg.Chat.ID, chunk); err != nil {
+		if _, err := b.send(ctx, msg.Chat.ID, chunk); err != nil {
 			if ctx.Err() == nil {
 				b.logf("could not reply to user %d (message %d of %d): %v", msg.From.ID, i+1, len(chunks), err)
 			}
@@ -138,16 +161,16 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 
 // send delivers one message, waiting out Telegram's rate limit when it asks
 // to: a long answer is several messages in a row, which is what trips it.
-func (b *Bot) send(ctx context.Context, chatID int64, text string) error {
+func (b *Bot) send(ctx context.Context, chatID int64, text string) (int64, error) {
 	for attempt := 0; ; attempt++ {
-		err := b.client.SendMessage(ctx, chatID, text)
+		id, err := b.client.SendMessage(ctx, chatID, text)
 		var apiErr *APIError
 		if !errors.As(err, &apiErr) || apiErr.RetryAfter <= 0 || attempt == 3 {
-			return err
+			return id, err
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return 0, ctx.Err()
 		case <-time.After(apiErr.RetryAfter):
 		}
 	}

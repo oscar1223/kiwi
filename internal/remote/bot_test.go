@@ -16,7 +16,7 @@ import (
 const testToken = "123456:SECRET-token"
 
 // Echo replies with the message it got: a handler with no agent behind it.
-func Echo(_ context.Context, msg Message) string { return msg.Text }
+func Echo(_ context.Context, msg Message, _ Conversation) string { return msg.Text }
 
 // fakeAPI plays the Telegram Bot API: it serves queued updates to getUpdates
 // and records every sendMessage.
@@ -374,7 +374,7 @@ func TestSlowHandlerDoesNotBlockPolling(t *testing.T) {
 	api := newFakeAPI(t)
 	release := make(chan struct{})
 	var once sync.Once
-	handler := func(ctx context.Context, m Message) string {
+	handler := func(ctx context.Context, m Message, _ Conversation) string {
 		if m.Text == "lento" {
 			select {
 			case <-release:
@@ -415,7 +415,7 @@ func TestLongReplyArrivesInOrder(t *testing.T) {
 		fmt.Fprintf(&long, "Línea %03d de una respuesta muy larga del agente.\n", i)
 	}
 	reply := long.String() // ~15.000 caracteres
-	b := NewBot(api.client(), []int64{42}, func(context.Context, Message) string { return reply })
+	b := NewBot(api.client(), []int64{42}, func(context.Context, Message, Conversation) string { return reply })
 	api.queue(textUpdate(1, 42, "private", "cuéntamelo todo"))
 
 	stop := runBot(t, b)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oscar1223/kiwi/internal/agent"
 	"github.com/oscar1223/kiwi/internal/llm"
@@ -30,6 +31,9 @@ type Session struct {
 
 	// Log reports progress to the operator's terminal. May be nil.
 	Log func(string)
+	// LiveInterval is how often the live progress message may be edited.
+	// Zero means DefaultLiveInterval.
+	LiveInterval time.Duration
 
 	mu sync.Mutex
 }
@@ -38,7 +42,8 @@ type Session struct {
 const Busy = "Sigo con la tarea anterior. Te escribo cuando acabe; mándame esto después."
 
 // Handle is a Handler: it answers commands and runs everything else as a turn.
-func (s *Session) Handle(ctx context.Context, msg Message) string {
+// While a turn runs, conv shows its progress; conv may be nil.
+func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) string {
 	if !s.mu.TryLock() {
 		return Busy
 	}
@@ -47,7 +52,7 @@ func (s *Session) Handle(ctx context.Context, msg Message) string {
 	text := strings.TrimSpace(msg.Text)
 	switch command(text) {
 	case "/start", "/help":
-		return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea y te contesto al terminar.\n/new empieza una conversación nueva.", s.WorkDir)
+		return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea: mientras trabajo, un mensaje va mostrando lo que hago, y al terminar te contesto.\n/new empieza una conversación nueva.", s.WorkDir)
 	case "/new":
 		if err := s.Reset(ctx); err != nil {
 			return "No he podido empezar una conversación nueva: " + err.Error()
@@ -56,13 +61,23 @@ func (s *Session) Handle(ctx context.Context, msg Message) string {
 		return "Conversación nueva. ¿Qué hacemos?"
 	}
 
-	return s.turn(ctx, text)
+	return s.turn(ctx, text, conv)
 }
 
-func (s *Session) turn(ctx context.Context, input string) string {
+func (s *Session) turn(ctx context.Context, input string, conv Conversation) string {
 	s.logf("turn: %s", truncateRunes(input, 80))
 
-	res, err := s.Agent.Run(ctx, input, s.History, &logObserver{s: s})
+	obs := observers{&logObserver{s: s}}
+	var live *liveObserver
+	if conv != nil {
+		live = startLive(ctx, conv, s.LiveInterval, s.Log)
+		obs = append(obs, live)
+	}
+
+	res, err := s.Agent.Run(ctx, input, s.History, obs)
+	if live != nil {
+		live.finish(ctx, err == nil)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down: nothing to tell the user that would reach them.
@@ -104,6 +119,33 @@ func command(text string) string {
 	}
 	cmd, _, _ := strings.Cut(strings.Fields(text)[0], "@")
 	return strings.ToLower(cmd)
+}
+
+// observers fans every event out to several observers.
+type observers []agent.Observer
+
+func (os observers) OnText(d string) {
+	for _, o := range os {
+		o.OnText(d)
+	}
+}
+
+func (os observers) OnToolCall(c llm.ToolCall) {
+	for _, o := range os {
+		o.OnToolCall(c)
+	}
+}
+
+func (os observers) OnToolResult(c llm.ToolCall, out string, isErr bool) {
+	for _, o := range os {
+		o.OnToolResult(c, out, isErr)
+	}
+}
+
+func (os observers) OnUsage(u llm.Usage) {
+	for _, o := range os {
+		o.OnUsage(u)
+	}
 }
 
 // logObserver reports tool calls to the operator's terminal. The Telegram

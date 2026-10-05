@@ -54,7 +54,7 @@ func TestTurnWithToolCalls(t *testing.T) {
 		llmtest.Step{Text: "He creado hola.txt."},
 	)
 
-	reply := s.Handle(context.Background(), msg("crea hola.txt"))
+	reply := s.Handle(context.Background(), msg("crea hola.txt"), nil)
 
 	if reply != "He creado hola.txt." {
 		t.Errorf("reply = %q, want the model's final text", reply)
@@ -80,8 +80,8 @@ func TestHistoryCarriesOver(t *testing.T) {
 		llmtest.Step{Text: "Encantado, Óscar."},
 		llmtest.Step{Text: "Te llamas Óscar."},
 	)
-	s.Handle(context.Background(), msg("me llamo Óscar"))
-	s.Handle(context.Background(), msg("¿cómo me llamo?"))
+	s.Handle(context.Background(), msg("me llamo Óscar"), nil)
+	s.Handle(context.Background(), msg("¿cómo me llamo?"), nil)
 
 	second := fake.Requests[1].Messages
 	if len(second) < 3 || !strings.Contains(second[0].Content, "Óscar") {
@@ -94,11 +94,11 @@ func TestNewStartsOver(t *testing.T) {
 		llmtest.Step{Text: "uno"},
 		llmtest.Step{Text: "dos"},
 	)
-	s.Handle(context.Background(), msg("primero"))
-	if reply := s.Handle(context.Background(), msg("/new")); !strings.Contains(reply, "nueva") {
+	s.Handle(context.Background(), msg("primero"), nil)
+	if reply := s.Handle(context.Background(), msg("/new"), nil); !strings.Contains(reply, "nueva") {
 		t.Errorf("/new replied %q", reply)
 	}
-	s.Handle(context.Background(), msg("segundo"))
+	s.Handle(context.Background(), msg("segundo"), nil)
 
 	if n := len(fake.Requests[1].Messages); n != 1 {
 		t.Errorf("after /new the request carried %d messages, want only the new one", n)
@@ -108,7 +108,7 @@ func TestNewStartsOver(t *testing.T) {
 func TestCommandsDoNotReachTheModel(t *testing.T) {
 	s, fake, _ := newTestSession(t)
 	for _, c := range []string{"/start", "/help", "/start@kiwi_bot"} {
-		if reply := s.Handle(context.Background(), msg(c)); !strings.Contains(reply, s.WorkDir) {
+		if reply := s.Handle(context.Background(), msg(c), nil); !strings.Contains(reply, s.WorkDir) {
 			t.Errorf("%s replied %q, want it to say which directory it works in", c, reply)
 		}
 	}
@@ -129,11 +129,11 @@ func TestBusyWhileTurnRuns(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.Handle(context.Background(), msg("tarea larga"))
+		s.Handle(context.Background(), msg("tarea larga"), nil)
 	}()
 	<-started
 
-	if reply := s.Handle(context.Background(), msg("otra cosa")); reply != Busy {
+	if reply := s.Handle(context.Background(), msg("otra cosa"), nil); reply != Busy {
 		t.Errorf("second message mid-turn replied %q, want Busy", reply)
 	}
 	wg.Wait()
@@ -141,7 +141,7 @@ func TestBusyWhileTurnRuns(t *testing.T) {
 
 func TestProviderErrorIsReported(t *testing.T) {
 	s, _, saved := newTestSession(t, llmtest.Step{Err: errors.New("529 overloaded")})
-	reply := s.Handle(context.Background(), msg("hola"))
+	reply := s.Handle(context.Background(), msg("hola"), nil)
 	if !strings.Contains(reply, "529 overloaded") {
 		t.Errorf("reply = %q, want the error passed on", reply)
 	}
@@ -153,7 +153,7 @@ func TestProviderErrorIsReported(t *testing.T) {
 func TestCancelledTurnSendsNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s, _, _ := newTestSession(t, llmtest.Step{Hook: cancel, Text: "nunca"})
-	if reply := s.Handle(ctx, msg("hola")); reply != "" {
+	if reply := s.Handle(ctx, msg("hola"), nil); reply != "" {
 		t.Errorf("reply = %q, want nothing when shutting down", reply)
 	}
 }
