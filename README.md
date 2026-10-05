@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/kiwi.svg" width="96" height="96" alt="kiwi"></p>
+<p align="center"><img src="assets/kiwi.svg" width="116" height="116" alt="kiwi"></p>
 
 # Kiwi
 
