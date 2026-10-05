@@ -6,16 +6,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Handler answers one message from an allowed user. An empty reply sends
 // nothing.
 type Handler func(ctx context.Context, msg Message) string
-
-// Echo is the handler for kiwi serve before it has an agent: it replies with
-// the message it got.
-func Echo(_ context.Context, msg Message) string { return msg.Text }
 
 // Bot long-polls Telegram and hands messages from allowed users to a Handler.
 //
@@ -62,8 +59,16 @@ func (b *Bot) logf(format string, args ...any) {
 // Network errors are expected on a connection that stays open for hours, so
 // they are logged and retried with backoff rather than returned. Only a
 // rejected token stops the bot: no amount of retrying fixes that.
+//
+// Each message is handled on its own goroutine, so polling carries on while a
+// long turn runs and the handler can answer a second message with "busy".
+// Run waits for those goroutines before returning.
 func (b *Bot) Run(ctx context.Context) error {
-	var offset int64
+	var (
+		offset   int64
+		inflight sync.WaitGroup
+	)
+	defer inflight.Wait()
 	backoff := b.minBackoff
 
 	for {
@@ -89,7 +94,11 @@ func (b *Bot) Run(ctx context.Context) error {
 
 		for _, u := range updates {
 			offset = u.UpdateID + 1
-			b.dispatch(ctx, u)
+			inflight.Add(1)
+			go func() {
+				defer inflight.Done()
+				b.dispatch(ctx, u)
+			}()
 		}
 	}
 }
@@ -113,12 +122,51 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 	}
 
 	reply := b.handle(ctx, *msg)
-	if reply == "" {
+	if reply == "" || ctx.Err() != nil {
 		return
 	}
-	if err := b.client.SendMessage(ctx, msg.Chat.ID, reply); err != nil && ctx.Err() == nil {
+	if err := b.client.SendMessage(ctx, msg.Chat.ID, fitMessage(reply)); err != nil && ctx.Err() == nil {
 		b.logf("could not reply to user %d: %v", msg.From.ID, err)
 	}
+}
+
+// maxMessage is Telegram's limit per message. Longer text is rejected whole,
+// not truncated, so it has to be cut here.
+const maxMessage = 4096
+
+// fitMessage cuts text to what one message can carry. Splitting a long answer
+// across several messages is #9; until then the end is dropped and marked.
+// Telegram counts UTF-16 code units, so the margin covers characters outside
+// the BMP (emoji), which count twice.
+func fitMessage(text string) string {
+	if utf16Len(text) <= maxMessage {
+		return text
+	}
+	const marker = "\n\n[…respuesta recortada]"
+	budget := maxMessage - utf16Len(marker)
+	units := 0
+	for i, c := range text {
+		if units+utf16Units(c) > budget {
+			return text[:i] + marker
+		}
+		units += utf16Units(c)
+	}
+	return text
+}
+
+func utf16Len(s string) int {
+	n := 0
+	for _, c := range s {
+		n += utf16Units(c)
+	}
+	return n
+}
+
+func utf16Units(c rune) int {
+	if c > 0xFFFF {
+		return 2
+	}
+	return 1
 }
 
 // ParseUserIDs parses a comma- or space-separated list of Telegram user IDs.

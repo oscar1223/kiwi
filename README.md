@@ -245,8 +245,10 @@ comandos sin pedir confirmación.
 
 ## `kiwi serve` (Telegram, en desarrollo)
 
-Kiwi como bot de Telegram, para hablarle desde el móvil. Por ahora solo devuelve lo
-que recibe: es el primer paso de [#6](https://github.com/oscar1223/kiwi/issues/6).
+Kiwi como bot de Telegram, para mandarle tareas desde el móvil. Cada mensaje es una
+tarea para el agente, que trabaja en el directorio donde lo arrancas (o `--cwd`) y te
+contesta al terminar. Es la épica [#6](https://github.com/oscar1223/kiwi/issues/6), aún
+en marcha.
 
 1. Crea un bot con [@BotFather](https://t.me/BotFather) y copia su token.
 2. Saca tu user ID con [@userinfobot](https://t.me/userinfobot).
@@ -257,13 +259,19 @@ que recibe: es el primer paso de [#6](https://github.com/oscar1223/kiwi/issues/6
    KIWI_TELEGRAM_ALLOWED_USERS=11111111
    ```
 
-4. `kiwi serve`
+4. `kiwi serve` desde el directorio del proyecto.
+
+Va en modo `work`: edita ficheros y ejecuta comandos sin preguntar, y lo que el modo
+pediría confirmar (un `rm -rf`, un `sudo`…) se deniega. `--mode plan` lo deja en solo
+lectura. Sigue la última conversación del directorio, así que reiniciarlo no pierde el
+hilo; `/new` empieza una nueva. Solo hace una tarea a la vez: si le escribes mientras
+trabaja, te dice que está ocupado.
 
 Solo contesta a los IDs de la lista y solo en chats privados; a cualquier otro no le
 responde nada. Usa long polling, así que no abre ningún puerto. Trata el token como
 una contraseña: con él se pueden leer los mensajes que le mandas al bot y contestar
-en su nombre. Y en cuanto el bot tenga agente, **quien entre en tu cuenta de Telegram
-podrá ejecutar código en la máquina donde corre**.
+en su nombre. Y **quien entre en tu cuenta de Telegram
+puede ejecutar código en la máquina donde corre**.
 
 ## Configuración
 
