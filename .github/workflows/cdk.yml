@@ -8,7 +8,7 @@ on:
     paths: ["deploy/aws/**", ".github/workflows/cdk.yml"]
 
 jobs:
-  test:
+  cdk:
     runs-on: ubuntu-latest
     defaults:
       run:
