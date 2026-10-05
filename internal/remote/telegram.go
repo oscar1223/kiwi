@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -161,11 +162,29 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 	return updates, err
 }
 
-// SendMessage sends plain text to a chat.
-func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
+// SendMessage sends plain text to a chat and returns the new message's ID.
+func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) (int64, error) {
 	params := struct {
 		ChatID int64  `json:"chat_id"`
 		Text   string `json:"text"`
 	}{chatID, text}
-	return c.call(ctx, "sendMessage", params, nil)
+	var sent Message
+	err := c.call(ctx, "sendMessage", params, &sent)
+	return sent.MessageID, err
+}
+
+// EditMessageText replaces the text of a message the bot sent.
+func (c *Client) EditMessageText(ctx context.Context, chatID, messageID int64, text string) error {
+	params := struct {
+		ChatID    int64  `json:"chat_id"`
+		MessageID int64  `json:"message_id"`
+		Text      string `json:"text"`
+	}{chatID, messageID, text}
+	err := c.call(ctx, "editMessageText", params, nil)
+	// Editing to the same text is an error to Telegram and a no-op to us.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && strings.Contains(apiErr.Description, "message is not modified") {
+		return nil
+	}
+	return err
 }
