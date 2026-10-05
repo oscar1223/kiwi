@@ -159,11 +159,23 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 	if reply == "" || ctx.Err() != nil {
 		return
 	}
-	chunks := splitMessage(reply, maxMessage)
+	b.Reply(ctx, msg.Chat.ID, reply)
+}
+
+// Conversation returns the Conversation for a chat, for work that is not an
+// answer to a message, such as a scheduled task.
+func (b *Bot) Conversation(chatID int64) Conversation { return botChat{b, chatID} }
+
+// Reply sends text to a chat, split into as many messages as it takes.
+func (b *Bot) Reply(ctx context.Context, chatID int64, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	chunks := splitMessage(text, maxMessage)
 	for i, chunk := range chunks {
-		if _, err := b.send(ctx, msg.Chat.ID, chunk); err != nil {
+		if _, err := b.send(ctx, chatID, chunk); err != nil {
 			if ctx.Err() == nil {
-				b.logf("could not reply to user %d (message %d of %d): %v", msg.From.ID, i+1, len(chunks), err)
+				b.logf("could not reply in chat %d (message %d of %d): %v", chatID, i+1, len(chunks), err)
 			}
 			return
 		}

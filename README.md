@@ -270,6 +270,22 @@ lectura. Sigue la última conversación del directorio, así que reiniciarlo no 
 hilo; `/new` empieza una nueva. Solo hace una tarea a la vez: si le escribes mientras
 trabaja, te dice que está ocupado.
 
+### Tareas programadas
+
+`/cron` programa tareas que Kiwi hace solo y te manda al chat, con el mismo mensaje en
+vivo y los mismos botones de aprobación:
+
+```
+/cron add "0 9 * * 1-5" revisa los PRs abiertos y resúmelos
+/cron add @daily resume los commits de ayer
+/cron list
+/cron pause 3 · /cron resume 3 · /cron rm 3 · /cron run 3
+```
+
+Las horas van en la zona de `KIWI_TZ` (por defecto `Europe/Madrid`; un servidor suele
+estar en UTC). Cada ejecución es una conversación nueva, aparte de la del chat, y si el
+bot estaba apagado a la hora de una tarea no se recupera: se espera a la siguiente.
+
 Solo contesta a los IDs de la lista y solo en chats privados; a cualquier otro no le
 responde nada. Usa long polling, así que no abre ningún puerto. Trata el token como
 una contraseña: con él se pueden leer los mensajes que le mandas al bot y contestar

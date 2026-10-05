@@ -89,7 +89,8 @@ rm /tmp/kiwi-secret.json
 ```
 
 - **Cualquier otra clave** que pongas en el secreto acaba también en el `.env`. Sirve,
-  por ejemplo, para la clave de otro proveedor de modelos.
+  por ejemplo, para la clave de otro proveedor de modelos, o para `KIWI_TZ` si tus
+  tareas de `/cron` no van en hora de Madrid (la instancia está en UTC).
 - **Mientras falten el token o la lista blanca,** el servicio falla al arrancar y
   systemd lo reintenta cada 10 s. En cuanto los pones, arranca solo.
 - **Si cambias un valor más tarde,** basta con `sudo systemctl restart kiwi`.

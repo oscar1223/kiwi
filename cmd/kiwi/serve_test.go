@@ -19,6 +19,7 @@ func TestServeRefusesIncompleteConfig(t *testing.T) {
 		{"no token", map[string]string{envTelegramAllowed: "42"}, envTelegramToken},
 		{"no allowed users", map[string]string{envTelegramToken: "1:x"}, "refusing"},
 		{"bad user id", map[string]string{envTelegramToken: "1:x", envTelegramAllowed: "@me"}, "not a Telegram user ID"},
+		{"bad time zone", map[string]string{envTelegramToken: "1:x", envTelegramAllowed: "42", envTimezone: "Mars/Olympus"}, envTimezone},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

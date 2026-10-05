@@ -38,7 +38,21 @@ type Session struct {
 	// Zero means DefaultLiveInterval.
 	LiveInterval time.Duration
 
-	mu sync.Mutex
+	// Cron answers /cron. Nil means scheduled tasks are off.
+	Cron *Scheduler
+	// NewRun starts a separate saved session for a scheduled run and returns
+	// how to save into it. Nil means scheduled runs are not saved.
+	NewRun func(ctx context.Context) (save func(ctx context.Context, turn []llm.Message) error, err error)
+
+	// turnSem holds one token while a turn runs: one turn at a time, which a
+	// scheduled run can wait for and a message cannot.
+	once    sync.Once
+	turnSem chan struct{}
+}
+
+func (s *Session) sem() chan struct{} {
+	s.once.Do(func() { s.turnSem = make(chan struct{}, 1) })
+	return s.turnSem
 }
 
 // Busy is the reply to a message that arrives while a turn is running.
@@ -47,15 +61,27 @@ const Busy = "Sigo con la tarea anterior. Te escribo cuando acabe; mándame esto
 // Handle is a Handler: it answers commands and runs everything else as a turn.
 // While a turn runs, conv shows its progress; conv may be nil.
 func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) string {
-	if !s.mu.TryLock() {
+	text := strings.TrimSpace(msg.Text)
+
+	// /cron only touches the job list, so it works mid-turn too.
+	if command(text) == "/cron" {
+		if s.Cron == nil {
+			return "Las tareas programadas no están activadas en este kiwi serve."
+		}
+		_, args, _ := strings.Cut(text, " ")
+		return s.Cron.Command(ctx, msg.Chat.ID, args)
+	}
+
+	select {
+	case s.sem() <- struct{}{}:
+		defer func() { <-s.sem() }()
+	default:
 		return Busy
 	}
-	defer s.mu.Unlock()
 
-	text := strings.TrimSpace(msg.Text)
 	switch command(text) {
 	case "/start", "/help":
-		return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea: mientras trabajo, un mensaje va mostrando lo que hago, y al terminar te contesto.\n/new empieza una conversación nueva.", s.WorkDir)
+		return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea: mientras trabajo, un mensaje va mostrando lo que hago, y al terminar te contesto.\n/new empieza una conversación nueva.\n/cron programa tareas que se ejecutan solas.", s.WorkDir)
 	case "/new":
 		if err := s.Reset(ctx); err != nil {
 			return "No he podido empezar una conversación nueva: " + err.Error()
@@ -64,10 +90,47 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 		return "Conversación nueva. ¿Qué hacemos?"
 	}
 
-	return s.turn(ctx, text, conv)
+	reply, turn := s.turn(ctx, text, conv, s.History)
+	if turn != nil {
+		history, err := s.Save(ctx, turn)
+		if err != nil {
+			// The answer is still worth sending; only the memory of it is lost.
+			s.logf("could not save the turn: %v", err)
+			history = append(append([]llm.Message(nil), s.History...), turn...)
+		}
+		s.History = history
+	}
+	return reply
 }
 
-func (s *Session) turn(ctx context.Context, input string, conv Conversation) string {
+// RunScheduled runs a scheduled task as a turn of its own: it waits for any
+// turn in progress, starts from an empty history so the context does not grow
+// from one run to the next, and is saved as a separate session. It does not
+// touch the chat's conversation.
+func (s *Session) RunScheduled(ctx context.Context, prompt string, conv Conversation) string {
+	select {
+	case s.sem() <- struct{}{}:
+		defer func() { <-s.sem() }()
+	case <-ctx.Done():
+		return ""
+	}
+
+	reply, turn := s.turn(ctx, prompt, conv, nil)
+	if turn != nil && s.NewRun != nil {
+		save, err := s.NewRun(ctx)
+		if err == nil {
+			err = save(ctx, turn)
+		}
+		if err != nil {
+			s.logf("could not save the scheduled run: %v", err)
+		}
+	}
+	return reply
+}
+
+// turn runs the agent once and returns the reply, and the turn's messages if
+// it completed (nil if it failed). The caller holds the turn semaphore.
+func (s *Session) turn(ctx context.Context, input string, conv Conversation, history []llm.Message) (string, []llm.Message) {
 	s.logf("turn: %s", truncateRunes(input, 80))
 
 	if s.Approver != nil && conv != nil {
@@ -82,35 +145,27 @@ func (s *Session) turn(ctx context.Context, input string, conv Conversation) str
 		obs = append(obs, live)
 	}
 
-	res, err := s.Agent.Run(ctx, input, s.History, obs)
+	res, err := s.Agent.Run(ctx, input, history, obs)
 	if live != nil {
 		live.finish(ctx, err == nil)
 	}
 	if err != nil {
 		if ctx.Err() != nil {
 			// Shutting down: nothing to tell the user that would reach them.
-			return ""
+			return "", nil
 		}
 		s.logf("turn failed: %v", err)
 		if errors.Is(err, agent.ErrMaxSteps) {
-			return "He llegado al límite de pasos sin terminar. Dime si sigo."
+			return "He llegado al límite de pasos sin terminar. Dime si sigo.", nil
 		}
-		return "Error: " + err.Error()
+		return "Error: " + err.Error(), nil
 	}
-
-	history, err := s.Save(ctx, res.Messages)
-	if err != nil {
-		// The answer is still worth sending; only the memory of it is lost.
-		s.logf("could not save the turn: %v", err)
-		history = append(append([]llm.Message(nil), s.History...), res.Messages...)
-	}
-	s.History = history
 	s.logf("turn done in %d step(s)", res.Steps)
 
 	if strings.TrimSpace(res.Text) == "" {
-		return "Hecho."
+		return "Hecho.", res.Messages
 	}
-	return res.Text
+	return res.Text, res.Messages
 }
 
 func (s *Session) logf(format string, args ...any) {
