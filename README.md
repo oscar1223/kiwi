@@ -243,6 +243,28 @@ git diff | kiwi ask "revisa este patch" -
 Por defecto es de solo lectura; `--mode work` permite editar, y `--yolo` además ejecuta
 comandos sin pedir confirmación.
 
+## `kiwi serve` (Telegram, en desarrollo)
+
+Kiwi como bot de Telegram, para hablarle desde el móvil. Por ahora solo devuelve lo
+que recibe: es el primer paso de [#6](https://github.com/oscar1223/kiwi/issues/6).
+
+1. Crea un bot con [@BotFather](https://t.me/BotFather) y copia su token.
+2. Saca tu user ID con [@userinfobot](https://t.me/userinfobot).
+3. Ponlos en el `.env` de Kiwi (`~/.config/kiwi/.env`), nunca en un repo:
+
+   ```sh
+   KIWI_TELEGRAM_TOKEN=123456:ABC...
+   KIWI_TELEGRAM_ALLOWED_USERS=11111111
+   ```
+
+4. `kiwi serve`
+
+Solo contesta a los IDs de la lista y solo en chats privados; a cualquier otro no le
+responde nada. Usa long polling, así que no abre ningún puerto. Trata el token como
+una contraseña: con él se pueden leer los mensajes que le mandas al bot y contestar
+en su nombre. Y en cuanto el bot tenga agente, **quien entre en tu cuenta de Telegram
+podrá ejecutar código en la máquina donde corre**.
+
 ## Configuración
 
 Todo vive bajo `~/.config/kiwi/` (u `$XDG_CONFIG_HOME/kiwi/`):

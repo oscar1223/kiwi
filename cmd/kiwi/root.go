@@ -58,6 +58,7 @@ Run ` + "`kiwi`" + ` with no arguments to start the interactive interface, or
 
 	cmd.AddCommand(newAskCmd(&g))
 	cmd.AddCommand(newSessionCmd(&g))
+	cmd.AddCommand(newServeCmd())
 	cmd.AddCommand(newUpdateCmd())
 	cmd.AddCommand(newDoctorCmd())
 	return cmd
