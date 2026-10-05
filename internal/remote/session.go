@@ -31,6 +31,9 @@ type Session struct {
 
 	// Log reports progress to the operator's terminal. May be nil.
 	Log func(string)
+	// Approver, when set, is the permission.Decider of Agent's broker: it
+	// is pointed at the chat of each turn so questions reach whoever asked.
+	Approver *Approver
 	// LiveInterval is how often the live progress message may be edited.
 	// Zero means DefaultLiveInterval.
 	LiveInterval time.Duration
@@ -66,6 +69,11 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 
 func (s *Session) turn(ctx context.Context, input string, conv Conversation) string {
 	s.logf("turn: %s", truncateRunes(input, 80))
+
+	if s.Approver != nil && conv != nil {
+		s.Approver.attach(conv)
+		defer s.Approver.detach()
+	}
 
 	obs := observers{&logObserver{s: s}}
 	var live *liveObserver

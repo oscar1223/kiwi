@@ -26,6 +26,8 @@ type fakeAPI struct {
 	mu        sync.Mutex
 	updates   []Update
 	sent      []sentMessage
+	answered  []string // callback_query IDs passed to answerCallbackQuery
+	edits     []sentMessage
 	failNext  int // getUpdates calls to answer with HTTP 502 first
 	limitNext int // sendMessage calls to answer with 429 first
 	polls     int
@@ -131,6 +133,24 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		f.sent = append(f.sent, m)
 		f.mu.Unlock()
 		f.reply(w, map[string]any{"message_id": 1})
+
+	case "answerCallbackQuery":
+		var p struct {
+			ID string `json:"callback_query_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&p)
+		f.mu.Lock()
+		f.answered = append(f.answered, p.ID)
+		f.mu.Unlock()
+		f.reply(w, true)
+
+	case "editMessageText":
+		var m sentMessage
+		json.NewDecoder(r.Body).Decode(&m)
+		f.mu.Lock()
+		f.edits = append(f.edits, m)
+		f.mu.Unlock()
+		f.reply(w, true)
 
 	default:
 		f.t.Errorf("unexpected Bot API method %q", method)

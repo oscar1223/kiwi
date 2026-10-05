@@ -20,17 +20,18 @@ type fakeConv struct {
 }
 
 type convOp struct {
-	at   time.Time
-	edit bool
-	id   int64
-	text string
+	at      time.Time
+	edit    bool
+	id      int64
+	text    string
+	buttons [][]Button
 }
 
-func (c *fakeConv) Send(_ context.Context, text string) (int64, error) {
+func (c *fakeConv) Send(_ context.Context, text string, buttons ...[]Button) (int64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.nextID++
-	c.ops = append(c.ops, convOp{at: time.Now(), id: c.nextID, text: text})
+	c.ops = append(c.ops, convOp{at: time.Now(), id: c.nextID, text: text, buttons: buttons})
 	return c.nextID, nil
 }
 

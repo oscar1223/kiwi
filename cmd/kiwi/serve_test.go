@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oscar1223/kiwi/internal/permission"
 )
@@ -22,7 +23,7 @@ func TestServeRefusesIncompleteConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			getenv := func(k string) string { return tt.env[k] }
-			err := runServe(context.Background(), &globalFlags{}, permission.ModeWork, getenv, io.Discard)
+			err := runServe(context.Background(), &globalFlags{}, permission.ModeWork, time.Minute, getenv, io.Discard)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("runServe() = %v, want an error mentioning %q", err, tt.wantErr)
 			}
