@@ -70,6 +70,9 @@ type APIError struct {
 	Method      string
 	Code        int
 	Description string
+	// RetryAfter is how long to wait before trying again, when Telegram
+	// rate-limited the request (429).
+	RetryAfter time.Duration
 }
 
 func (e *APIError) Error() string {
@@ -104,6 +107,9 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 		Result      json.RawMessage `json:"result"`
 		ErrorCode   int             `json:"error_code"`
 		Description string          `json:"description"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		return fmt.Errorf("telegram %s: decoding response (HTTP %d): %w", method, resp.StatusCode, err)
@@ -113,7 +119,12 @@ func (c *Client) call(ctx context.Context, method string, params, out any) error
 		if code == 0 {
 			code = resp.StatusCode
 		}
-		return &APIError{Method: method, Code: code, Description: envelope.Description}
+		return &APIError{
+			Method:      method,
+			Code:        code,
+			Description: envelope.Description,
+			RetryAfter:  time.Duration(envelope.Parameters.RetryAfter) * time.Second,
+		}
 	}
 	if out == nil {
 		return nil
