@@ -273,6 +273,9 @@ una contraseña: con él se pueden leer los mensajes que le mandas al bot y cont
 en su nombre. Y **quien entre en tu cuenta de Telegram
 puede ejecutar código en la máquina donde corre**.
 
+Para tenerlo siempre encendido en un EC2, sin puertos abiertos, está el stack de CDK de
+[`deploy/aws`](deploy/aws/README.md).
+
 ## Configuración
 
 Todo vive bajo `~/.config/kiwi/` (u `$XDG_CONFIG_HOME/kiwi/`):

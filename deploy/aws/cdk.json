@@ -1,0 +1,8 @@
+{
+  "app": "npx tsx bin/kiwi.ts",
+  "context": {
+    "kiwi:repo": "oscar1223/kiwi",
+    "kiwi:version": "latest",
+    "kiwi:instanceType": "t4g.small"
+  }
+}

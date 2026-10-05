@@ -1,0 +1,28 @@
+name: CDK
+
+on:
+  push:
+    branches: [main]
+    paths: ["deploy/aws/**", ".github/workflows/cdk.yml"]
+  pull_request:
+    paths: ["deploy/aws/**", ".github/workflows/cdk.yml"]
+
+jobs:
+  cdk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: deploy/aws/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      # Sin credenciales: la AMI va en el contexto de los tests.
+      - run: npm test
