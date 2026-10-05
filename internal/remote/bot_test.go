@@ -14,6 +14,9 @@ import (
 
 const testToken = "123456:SECRET-token"
 
+// Echo replies with the message it got: a handler with no agent behind it.
+func Echo(_ context.Context, msg Message) string { return msg.Text }
+
 // fakeAPI plays the Telegram Bot API: it serves queued updates to getUpdates
 // and records every sendMessage.
 type fakeAPI struct {
@@ -352,5 +355,66 @@ func TestParseUserIDs(t *testing.T) {
 				t.Errorf("ParseUserIDs(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 		}
+	}
+}
+
+func TestFitMessage(t *testing.T) {
+	short := strings.Repeat("a", 100)
+	if got := fitMessage(short); got != short {
+		t.Error("a short message should pass unchanged")
+	}
+
+	exact := strings.Repeat("a", maxMessage)
+	if got := fitMessage(exact); got != exact {
+		t.Error("a message of exactly 4096 characters fits and should pass unchanged")
+	}
+
+	for _, unit := range []string{"a", "ñ", "🥝"} {
+		long := strings.Repeat(unit, 5000)
+		got := fitMessage(long)
+		if !strings.HasSuffix(got, "[…respuesta recortada]") {
+			t.Errorf("%q x5000: missing the truncation marker", unit)
+		}
+		if n := utf16Len(got); n > maxMessage {
+			t.Errorf("%q x5000: cut to %d UTF-16 units, over Telegram's %d", unit, n, maxMessage)
+		}
+	}
+}
+
+func TestSlowHandlerDoesNotBlockPolling(t *testing.T) {
+	api := newFakeAPI(t)
+	release := make(chan struct{})
+	var once sync.Once
+	handler := func(ctx context.Context, m Message) string {
+		if m.Text == "lento" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+			return "terminé"
+		}
+		once.Do(func() { close(release) })
+		return "rápido"
+	}
+
+	b := NewBot(api.client(), []int64{42}, handler)
+	api.queue(textUpdate(1, 42, "private", "lento"))
+	stop := runBot(t, b)
+
+	// Arrives while the first message is still being handled.
+	time.Sleep(20 * time.Millisecond)
+	api.queue(textUpdate(2, 42, "private", "otro"))
+
+	waitFor(t, "both replies", func() bool { return len(api.sentMessages()) == 2 })
+	stop()
+
+	// "lento" can only finish because "otro" was handled while it was still
+	// running; with sequential handling the test times out above instead.
+	got := map[string]bool{}
+	for _, m := range api.sentMessages() {
+		got[m.Text] = true
+	}
+	if !got["rápido"] || !got["terminé"] {
+		t.Errorf("replies = %+v, want both", api.sentMessages())
 	}
 }
