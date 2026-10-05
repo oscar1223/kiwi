@@ -7,10 +7,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
+	// Embedded so KIWI_TZ works on minimal servers without zoneinfo.
+	_ "time/tzdata"
 
+	"github.com/oscar1223/kiwi/internal/config"
 	"github.com/oscar1223/kiwi/internal/llm"
 	"github.com/oscar1223/kiwi/internal/permission"
 	"github.com/oscar1223/kiwi/internal/remote"
@@ -23,6 +27,10 @@ import (
 const (
 	envTelegramToken   = "KIWI_TELEGRAM_TOKEN"
 	envTelegramAllowed = "KIWI_TELEGRAM_ALLOWED_USERS"
+	// envTimezone is the zone /cron schedules are read in. A server usually
+	// runs in UTC, which is not what "every day at 9" means to its owner.
+	envTimezone     = "KIWI_TZ"
+	defaultTimezone = "Europe/Madrid"
 )
 
 func newServeCmd(g *globalFlags) *cobra.Command {
@@ -53,7 +61,10 @@ buttons; with no answer before --approval-timeout it is refused. Use --mode
 plan to keep it read-only.
 
 It carries on the most recent conversation for the directory, so a restart
-does not lose the thread. Send /new to start over.`,
+does not lose the thread. Send /new to start over.
+
+/cron schedules tasks that run on their own and report to the chat, read in
+the time zone in KIWI_TZ (default Europe/Madrid). Send /cron for the details.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m := permission.Mode(mode)
@@ -83,6 +94,14 @@ func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, approva
 		// A bot nobody may use is pointless, and one everybody may use is a
 		// remote shell. Refusing to start is the only safe default.
 		return fmt.Errorf("%s is not set; refusing to run a bot anyone can talk to (get your ID from @userinfobot)", envTelegramAllowed)
+	}
+	tzName := getenv(envTimezone)
+	if tzName == "" {
+		tzName = defaultTimezone
+	}
+	loc, err := time.LoadLocation(tzName)
+	if err != nil {
+		return fmt.Errorf("%s: %w", envTimezone, err)
 	}
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -119,17 +138,64 @@ func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, approva
 	}
 	defer rs.Close()
 
-	fmt.Fprintf(out, "kiwi serve: @%s is listening for %d allowed user(s), in %s mode, working in %s. Ctrl+C to stop.\n",
-		me.Username, len(allowed), mode, rs.WorkDir)
-
 	bot := remote.NewBot(client, allowed, rs.Handle)
 	bot.Log = logf
 	bot.OnCallback = approver.HandleCallback
-	if err := bot.Run(ctx); err != nil {
+
+	cron, err := newServeScheduler(rs, bot, allowed, loc, logf)
+	if err != nil {
+		return err
+	}
+	defer cron.Store.Close()
+	rs.Cron = cron
+	cronDone := make(chan struct{})
+	go func() { cron.Start(ctx); close(cronDone) }()
+
+	fmt.Fprintf(out, "kiwi serve: @%s is listening for %d allowed user(s), in %s mode, working in %s, scheduling in %s. Ctrl+C to stop.\n",
+		me.Username, len(allowed), mode, rs.WorkDir, loc)
+
+	err = bot.Run(ctx)
+	stop() // a fatal bot error also stops the scheduler
+	<-cronDone
+	if err != nil {
 		return err
 	}
 	fmt.Fprintln(out, "kiwi serve: stopped")
 	return nil
+}
+
+// newServeScheduler runs /cron jobs as turns of the bot's session, reporting
+// to the chat that created each one.
+func newServeScheduler(rs *serveSession, bot *remote.Bot, allowed []int64, loc *time.Location, logf func(string)) (*remote.Scheduler, error) {
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return nil, err
+	}
+	store, err := remote.OpenCronStore(filepath.Join(dataDir, "cron.db"))
+	if err != nil {
+		return nil, err
+	}
+
+	isAllowed := map[int64]bool{}
+	for _, id := range allowed {
+		isAllowed[id] = true
+	}
+
+	sc := remote.NewScheduler(store, loc, func(ctx context.Context, j remote.Job) {
+		// Jobs live in private chats, whose ID is the user's. Someone taken
+		// off the allowed list stops getting their jobs run, and messages.
+		if !isAllowed[j.ChatID] {
+			logf(fmt.Sprintf("cron: skipping job #%d: chat %d is no longer allowed", j.ID, j.ChatID))
+			return
+		}
+		conv := bot.Conversation(j.ChatID)
+		if _, err := conv.Send(ctx, fmt.Sprintf("⏰ Tarea #%d: %s", j.ID, truncate(j.Prompt, 300))); err != nil {
+			logf(fmt.Sprintf("cron: job #%d: %v", j.ID, err))
+		}
+		bot.Reply(ctx, j.ChatID, rs.RunScheduled(ctx, j.Prompt, conv))
+	})
+	sc.Log = logf
+	return sc, nil
 }
 
 // serveSession is the remote.Session the bot drives plus the runSession that
@@ -175,6 +241,16 @@ func newServeSession(ctx context.Context, g *globalFlags, mode permission.Mode, 
 		Log:      logf,
 		Save: func(ctx context.Context, turn []llm.Message) ([]llm.Message, error) {
 			return session.Persist(ctx, rs.store, rs.meta.ID, rs.agent.Provider, turn)
+		},
+		NewRun: func(ctx context.Context) (func(context.Context, []llm.Message) error, error) {
+			meta, err := rs.store.Create(ctx, rs.workDir)
+			if err != nil {
+				return nil, err
+			}
+			return func(ctx context.Context, turn []llm.Message) error {
+				_, err := session.Persist(ctx, rs.store, meta.ID, rs.agent.Provider, turn)
+				return err
+			}, nil
 		},
 		Reset: func(ctx context.Context) error {
 			meta, err := rs.store.Create(ctx, rs.workDir)
