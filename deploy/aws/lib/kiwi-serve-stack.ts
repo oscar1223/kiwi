@@ -13,6 +13,8 @@ export interface KiwiServeStackProps extends StackProps {
   readonly kiwiVersion: string;
   /** Tipo de instancia. Tiene que ser arm64 (Graviton). */
   readonly instanceType: string;
+  /** Zona de disponibilidad ("eu-north-1b"). Vacía: la primera de la región. */
+  readonly availabilityZone?: string;
 }
 
 /** Claves del secreto. Las vacías no se escriben en el .env. */
@@ -23,8 +25,16 @@ export const SECRET_KEYS = [
   "GH_TOKEN",
 ] as const;
 
-const instanceFile = (name: string) =>
-  readFileSync(path.join(__dirname, "instance", name), "utf8");
+/**
+ * Comando que escribe en la instancia el fichero lib/instance/<name>. Va en
+ * base64 porque CloudFormation cambia por "?" lo que no es ASCII en el user
+ * data: los acentos llegaban rotos y, como el template guardado no coincidía
+ * nunca con el sintetizado, cada diff veía un cambio en la instancia.
+ */
+const writeInstanceFile = (name: string, dest: string) => {
+  const b64 = readFileSync(path.join(__dirname, "instance", name)).toString("base64");
+  return `base64 -d > ${dest} <<'EOF'\n${b64.replace(/.{76}/g, "$&\n")}\nEOF`;
+};
 
 /**
  * kiwi serve en un EC2 sin puertos de entrada.
@@ -41,8 +51,11 @@ export class KiwiServeStack extends Stack {
     // Una subred pública en una sola AZ. Un NAT Gateway costaría más que la
     // instancia y no aporta nada: sin reglas de entrada, la IP pública solo
     // sirve para salir.
+    // La zona se puede fijar porque a veces una se queda sin capacidad para el
+    // tipo de instancia. Cambiarla en un stack ya desplegado reemplaza la
+    // subred y con ella la instancia.
     const vpc = new ec2.Vpc(this, "Vpc", {
-      maxAzs: 1,
+      ...(props.availabilityZone ? { availabilityZones: [props.availabilityZone] } : { maxAzs: 1 }),
       natGateways: 0,
       subnetConfiguration: [{ name: "public", subnetType: ec2.SubnetType.PUBLIC, cidrMask: 24 }],
     });
@@ -107,9 +120,9 @@ AWS_REGION=${this.region}
 KIWI_REPO=${props.repo}
 KIWI_WORKDIR=${workdir}
 EOF`,
-      `cat > /usr/local/bin/kiwi-prepare <<'EOF'\n${instanceFile("kiwi-prepare.sh")}EOF`,
+      writeInstanceFile("kiwi-prepare.sh", "/usr/local/bin/kiwi-prepare"),
       "chmod 755 /usr/local/bin/kiwi-prepare",
-      `cat > /etc/systemd/system/kiwi.service <<'EOF'\n${instanceFile("kiwi.service")}EOF`,
+      writeInstanceFile("kiwi.service", "/etc/systemd/system/kiwi.service"),
       "systemctl daemon-reload",
       // Sin valores en el secreto el primer arranque falla y systemd lo
       // reintenta cada 10 s: en cuanto se rellena, el bot arranca solo.

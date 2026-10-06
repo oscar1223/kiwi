@@ -15,6 +15,7 @@ new KiwiServeStack(app, "KiwiServe", {
   repo: app.node.tryGetContext("kiwi:repo") ?? "",
   kiwiVersion: app.node.tryGetContext("kiwi:version") ?? "latest",
   instanceType: app.node.tryGetContext("kiwi:instanceType") ?? "t4g.small",
+  availabilityZone: app.node.tryGetContext("kiwi:az"),
 });
 
 Validations.of(app).addPlugins(new AwsSolutionsChecks(app, { verbose: true }));

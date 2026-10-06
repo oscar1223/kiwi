@@ -1,5 +1,7 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { test } from "node:test";
 
 import { App, Validations } from "aws-cdk-lib";
@@ -15,13 +17,14 @@ const context = {
     "ami-0123456789abcdef0",
 };
 
-function synth(repo = "oscar1223/kiwi") {
+function synth(repo = "oscar1223/kiwi", availabilityZone?: string) {
   const app = new App({ context });
   const stack = new KiwiServeStack(app, "Test", {
     env: { account: "123456789012", region: "eu-west-1" },
     repo,
     kiwiVersion: "latest",
     instanceType: "t4g.small",
+    availabilityZone,
   });
   return { app, stack, template: Template.fromStack(stack) };
 }
@@ -88,8 +91,8 @@ test("Session Manager disponible", () => {
 });
 
 test("el user data instala kiwi como servicio y clona el repo configurado", () => {
-  const instance = Object.values(template.findResources("AWS::EC2::Instance"))[0];
-  const userData = JSON.stringify(instance.Properties.UserData);
+  const rendered = renderUserData(template);
+  const userData = [rendered, embeddedFile(rendered, "/etc/systemd/system/kiwi.service")].join("\n");
   for (const needle of [
     "useradd --create-home --shell /bin/bash kiwi",
     "systemctl enable --now kiwi",
@@ -111,16 +114,34 @@ function renderUserData(t: Template): string {
   return parts.map((p) => (typeof p === "string" ? p : "arn:aws:secretsmanager:eu-west-1:123456789012:secret:Env")).join("");
 }
 
+// Contenido del fichero que el user data escribe en dest (va en base64).
+function embeddedFile(userData: string, dest: string): string {
+  const escaped = dest.replace(/[/.]/g, "\\$&");
+  const m = userData.match(new RegExp(`base64 -d > ${escaped} <<'EOF'\\n([A-Za-z0-9+/=\\n]*?)\\nEOF\\n`));
+  assert.ok(m, `el user data debería escribir ${dest}`);
+  return Buffer.from(m[1].replace(/\n/g, ""), "base64").toString("utf8");
+}
+
 test("el user data y los scripts que escribe son bash válido", () => {
   const userData = renderUserData(template);
   // Un error de sintaxis solo se vería al arrancar la instancia.
   execFileSync("bash", ["-n"], { input: userData });
+  execFileSync("bash", ["-n"], { input: embeddedFile(userData, "/usr/local/bin/kiwi-prepare") });
+  assert.match(embeddedFile(userData, "/etc/systemd/system/kiwi.service"), /^\[Unit\]/);
+});
 
-  const prepare = userData.match(/cat > \/usr\/local\/bin\/kiwi-prepare <<'EOF'\n([\s\S]*?)\nEOF\n/);
-  assert.ok(prepare, "el user data debería escribir kiwi-prepare");
-  execFileSync("bash", ["-n"], { input: prepare[1] });
-
-  assert.match(userData, /cat > \/etc\/systemd\/system\/kiwi.service <<'EOF'\n\[Unit\][\s\S]*?\nEOF\n/);
+test("el user data es ASCII y los ficheros llegan intactos", () => {
+  // CloudFormation cambia por "?" lo que no es ASCII: un acento en el user
+  // data rompe el fichero y hace que cada diff vea un cambio en la instancia.
+  const userData = renderUserData(template);
+  assert.ok(/^[\x00-\x7f]*$/.test(userData), "el user data tiene caracteres no ASCII");
+  for (const [name, dest] of [
+    ["kiwi-prepare.sh", "/usr/local/bin/kiwi-prepare"],
+    ["kiwi.service", "/etc/systemd/system/kiwi.service"],
+  ]) {
+    const source = readFileSync(path.join(__dirname, "..", "lib", "instance", name), "utf8");
+    assert.equal(embeddedFile(userData, dest), source);
+  }
 });
 
 test("sin repo, trabaja en un directorio vacío", () => {
@@ -140,4 +161,11 @@ test("cdk-nag (AwsSolutions) pasa, con cada excepción justificada", () => {
   Validations.of(app).addPlugins(new AwsSolutionsChecks(app));
   // Un hallazgo sin acknowledge hace fallar el synth.
   assert.doesNotThrow(() => app.synth());
+});
+
+test("kiwi:az fija la zona de la subred", () => {
+  synth().template.hasResourceProperties("AWS::EC2::Subnet", { AvailabilityZone: "dummy1a" });
+  const { template } = synth("oscar1223/kiwi", "eu-west-1b");
+  template.resourceCountIs("AWS::EC2::Subnet", 1);
+  template.hasResourceProperties("AWS::EC2::Subnet", { AvailabilityZone: "eu-west-1b" });
 });
