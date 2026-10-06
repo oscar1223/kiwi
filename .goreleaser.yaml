@@ -58,14 +58,16 @@ homebrew_casks:
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/oscar1223/kiwi"
     description: "Agente de código local-first para la terminal"
-    hooks:
-      post:
-        install: |
-          # El binario no está firmado por Apple: quitamos la cuarentena
-          # que macOS le pone a todo lo bajado, o Gatekeeper lo bloquea.
-          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kiwi"]
-          end
+    # El binario no está firmado por Apple: quitamos la cuarentena que macOS
+    # le pone a todo lo bajado, o Gatekeeper lo bloquea. Homebrew 7 depreca
+    # los bloques `postflight` con Ruby en favor de `postflight_steps`, que
+    # GoReleaser aún no genera: va como bloque literal.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{" }}staged_path{{ "}}" }}/kiwi"], must_succeed: false
+        end
+      end
 
 scoops:
   - name: kiwi
