@@ -70,6 +70,21 @@ npx cdk deploy -c kiwi:repo=oscar1223/otro -c kiwi:version=v0.2.0
 El user data solo se ejecuta en el primer arranque, así que estos cambios solo se
 aplican en una instancia nueva.
 
+### Si una zona se queda sin capacidad
+
+Por defecto la instancia va en la primera zona de la región. Si el deploy falla con
+`We currently do not have sufficient t4g.small capacity in the Availability Zone`, elige
+otra de las que propone el mensaje. Guárdala en `cdk.context.json`, junto a la AMI, para
+no tener que pasarla en cada deploy:
+
+```json
+"kiwi:az": "eu-north-1b"
+```
+
+Un primer deploy fallido deja el stack en `ROLLBACK_COMPLETE`, sin recursos. El
+siguiente `cdk deploy` lo borra y lo crea de nuevo. **Cambiar la zona de un stack que ya
+funciona reemplaza la instancia**, igual que cambiar la AMI.
+
 ## Rellenar el secreto
 
 El deploy crea el secreto vacío; su ARN aparece en la salida `SecretArn`. Rellénalo
