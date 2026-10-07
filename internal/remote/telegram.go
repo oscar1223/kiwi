@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,8 +23,9 @@ const apiBase = "https://api.telegram.org/bot"
 // Kiwi needs a handful of methods, so it is written here rather than pulled in
 // as a dependency.
 type Client struct {
-	base string // apiBase + token, no trailing slash
-	http *http.Client
+	base     string // apiBase + token, no trailing slash
+	fileBase string // where files are downloaded from: .../file/bot<token>
+	http     *http.Client
 }
 
 // NewClient returns a client for the bot with the given token.
@@ -37,7 +39,12 @@ func newClient(base string, hc *http.Client) *Client {
 		// the context getUpdates builds.
 		hc = &http.Client{}
 	}
-	return &Client{base: base, http: hc}
+	// Files live under /file/bot<token>/ rather than /bot<token>/.
+	fileBase := base
+	if i := strings.LastIndex(base, "/bot"); i >= 0 {
+		fileBase = base[:i] + "/file" + base[i:]
+	}
+	return &Client{base: base, fileBase: fileBase, http: hc}
 }
 
 // User is the sender of a message.
@@ -58,6 +65,32 @@ type Message struct {
 	From      *User  `json:"from,omitempty"`
 	Chat      Chat   `json:"chat"`
 	Text      string `json:"text,omitempty"`
+	// Caption is the text sent along with a photo, video, audio or document.
+	Caption string `json:"caption,omitempty"`
+
+	// Photo comes in several sizes, smallest first.
+	Photo     []File `json:"photo,omitempty"`
+	Voice     *File  `json:"voice,omitempty"`
+	Audio     *File  `json:"audio,omitempty"`
+	Video     *File  `json:"video,omitempty"`
+	VideoNote *File  `json:"video_note,omitempty"`
+	Document  *File  `json:"document,omitempty"`
+
+	// Attachment is the media the bot downloaded for this message, set
+	// before the Handler sees it. Not part of the Telegram API.
+	Attachment *Media `json:"-"`
+}
+
+// File is a file attached to a message: one photo size, a voice note, an
+// audio, a video or a document. Telegram leaves out what does not apply.
+type File struct {
+	FileID   string `json:"file_id"`
+	FileSize int64  `json:"file_size,omitempty"`
+	MIMEType string `json:"mime_type,omitempty"`
+	FileName string `json:"file_name,omitempty"`
+	Duration int    `json:"duration,omitempty"`
+	Width    int    `json:"width,omitempty"`
+	Height   int    `json:"height,omitempty"`
 }
 
 // CallbackQuery is a press on an inline keyboard button.
@@ -180,6 +213,54 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 	var updates []Update
 	err := c.call(ctx, "getUpdates", params, &updates)
 	return updates, err
+}
+
+// GetFile returns the path to download a file from, given its file_id. The
+// path is valid for at least an hour.
+func (c *Client) GetFile(ctx context.Context, fileID string) (string, error) {
+	params := struct {
+		FileID string `json:"file_id"`
+	}{fileID}
+	var f struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := c.call(ctx, "getFile", params, &f); err != nil {
+		return "", err
+	}
+	if f.FilePath == "" {
+		return "", errors.New("telegram getFile: no file_path (the file may be too big for a bot)")
+	}
+	return f.FilePath, nil
+}
+
+// Download writes the file at filePath (from GetFile) to w, refusing to read
+// more than limit bytes.
+func (c *Client) Download(ctx context.Context, filePath string, w io.Writer, limit int64) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.fileBase+"/"+filePath, nil)
+	if err != nil {
+		return errors.New("telegram download: building request failed")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		// Like call: the URL holds the token, so it never reaches the error.
+		var uerr *url.Error
+		if errors.As(err, &uerr) {
+			err = uerr.Err
+		}
+		return fmt.Errorf("telegram download: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("telegram download: HTTP %d", resp.StatusCode)
+	}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return fmt.Errorf("telegram download: %w", err)
+	}
+	if n > limit {
+		return fmt.Errorf("telegram download: the file is bigger than %d MB", limit>>20)
+	}
+	return nil
 }
 
 // SendMessage sends plain text to a chat and returns the new message's ID.

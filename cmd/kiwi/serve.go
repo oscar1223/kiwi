@@ -31,6 +31,10 @@ const (
 	// runs in UTC, which is not what "every day at 9" means to its owner.
 	envTimezone     = "KIWI_TZ"
 	defaultTimezone = "Europe/Madrid"
+	// Photos, audios, videos and PDFs are turned into text by a multimodal
+	// model on OpenRouter, so any main model can work with them.
+	envMediaModel = "KIWI_MEDIA_MODEL"
+	envMediaKey   = "OPENROUTER_API_KEY"
 )
 
 func newServeCmd(g *globalFlags) *cobra.Command {
@@ -64,7 +68,13 @@ It carries on the most recent conversation for the directory, so a restart
 does not lose the thread. Send /new to start over.
 
 /cron schedules tasks that run on their own and report to the chat, read in
-the time zone in KIWI_TZ (default Europe/Madrid). Send /cron for the details.`,
+the time zone in KIWI_TZ (default Europe/Madrid). Send /cron for the details.
+
+Photos, voice notes, audios, videos and documents are saved under Kiwi's data
+directory (inbox/). With OPENROUTER_API_KEY set, photos, audio, video and PDFs
+are also described or transcribed by ` + remote.DefaultMediaModel + `
+(change it with KIWI_MEDIA_MODEL), and the agent gets that text plus the path:
+the main model never sees the file itself. Those files are sent to OpenRouter.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m := permission.Mode(mode)
@@ -141,6 +151,16 @@ func runServe(ctx context.Context, g *globalFlags, mode permission.Mode, approva
 	bot := remote.NewBot(client, allowed, rs.Handle)
 	bot.Log = logf
 	bot.OnCallback = approver.HandleCallback
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+	bot.InboxDir = filepath.Join(dataDir, "inbox")
+	if key := getenv(envMediaKey); key != "" {
+		rs.Translator = &remote.OpenRouterTranslator{APIKey: key, Model: getenv(envMediaModel)}
+	} else {
+		logf(fmt.Sprintf("%s is not set: photos, audio and video are saved but not described", envMediaKey))
+	}
 
 	cron, err := newServeScheduler(rs, bot, allowed, loc, logf)
 	if err != nil {

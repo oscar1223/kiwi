@@ -32,6 +32,8 @@ type fakeAPI struct {
 	limitNext int // sendMessage calls to answer with 429 first
 	polls     int
 	offsets   []int64
+	files     map[string][]byte // file_id -> contents, for getFile and downloads
+	getFiles  int
 
 	srv *httptest.Server
 }
@@ -69,7 +71,28 @@ func (f *fakeAPI) reply(w http.ResponseWriter, result any) {
 	json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
 }
 
+// addFile makes a file downloadable by its file_id.
+func (f *fakeAPI) addFile(id string, data []byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[id] = data
+}
+
 func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
+	if filePrefix := "/file/bot" + testToken + "/"; strings.HasPrefix(r.URL.Path, filePrefix) {
+		f.mu.Lock()
+		data, ok := f.files[strings.TrimPrefix(r.URL.Path, filePrefix+"files/")]
+		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Write(data)
+		return
+	}
 	prefix := "/bot" + testToken + "/"
 	if !strings.HasPrefix(r.URL.Path, prefix) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -80,6 +103,16 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	switch method := strings.TrimPrefix(r.URL.Path, prefix); method {
 	case "getMe":
 		f.reply(w, User{ID: 1, Username: "kiwi_test_bot"})
+
+	case "getFile":
+		var p struct {
+			FileID string `json:"file_id"`
+		}
+		json.NewDecoder(r.Body).Decode(&p)
+		f.mu.Lock()
+		f.getFiles++
+		f.mu.Unlock()
+		f.reply(w, map[string]any{"file_id": p.FileID, "file_path": "files/" + p.FileID})
 
 	case "getUpdates":
 		var p struct {

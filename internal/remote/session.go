@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,9 @@ type Session struct {
 
 	// Cron answers /cron. Nil means scheduled tasks are off.
 	Cron *Scheduler
+	// Translator describes photos, audios, videos and PDFs for the model.
+	// Nil means they are saved but not described.
+	Translator Translator
 	// NewRun starts a separate saved session for a scheduled run and returns
 	// how to save into it. Nil means scheduled runs are not saved.
 	NewRun func(ctx context.Context) (save func(ctx context.Context, turn []llm.Message) error, err error)
@@ -62,6 +66,9 @@ const Busy = "Sigo con la tarea anterior. Te escribo cuando acabe; mándame esto
 // While a turn runs, conv shows its progress; conv may be nil.
 func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) string {
 	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		text = strings.TrimSpace(msg.Caption)
+	}
 
 	// /cron only touches the job list, so it works mid-turn too.
 	if command(text) == "/cron" {
@@ -79,15 +86,22 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 		return Busy
 	}
 
-	switch command(text) {
-	case "/start", "/help":
-		return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea: mientras trabajo, un mensaje va mostrando lo que hago, y al terminar te contesto.\n/new empieza una conversación nueva.\n/cron programa tareas que se ejecutan solas.", s.WorkDir)
-	case "/new":
-		if err := s.Reset(ctx); err != nil {
-			return "No he podido empezar una conversación nueva: " + err.Error()
+	if msg.Attachment == nil {
+		switch command(text) {
+		case "/start", "/help":
+			return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea: mientras trabajo, un mensaje va mostrando lo que hago, y al terminar te contesto. También entiendo fotos, notas de voz, audios, vídeos y documentos.\n/new empieza una conversación nueva.\n/cron programa tareas que se ejecutan solas.", s.WorkDir)
+		case "/new":
+			if err := s.Reset(ctx); err != nil {
+				return "No he podido empezar una conversación nueva: " + err.Error()
+			}
+			s.History = nil
+			return "Conversación nueva. ¿Qué hacemos?"
 		}
-		s.History = nil
-		return "Conversación nueva. ¿Qué hacemos?"
+	} else {
+		text = s.withAttachment(ctx, msg.Attachment, text, conv)
+		if ctx.Err() != nil {
+			return ""
+		}
 	}
 
 	reply, turn := s.turn(ctx, text, conv, s.History)
@@ -102,6 +116,81 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 	}
 	return reply
 }
+
+// withAttachment returns the text the model gets for a message with media:
+// where the file was saved, what the translator made of it, and what the user
+// wrote along with it. The file itself never reaches the model, so the saved
+// conversation keeps the description and not the bytes.
+func (s *Session) withAttachment(ctx context.Context, m *Media, caption string, conv Conversation) string {
+	var b strings.Builder
+	where := "no se ha podido guardar"
+	if m.Path != "" {
+		where = "guardado en " + m.Path
+	}
+	fmt.Fprintf(&b, "[Adjunto de Telegram: %s, %s]\n", strings.ToLower(m.label()), where)
+
+	switch {
+	case !translatable(m):
+		if m.class() == classText {
+			b.WriteString("[Es un documento de texto: léelo con read_file si hace falta.]\n")
+		} else {
+			b.WriteString("[No sé leer este tipo de fichero; solo tienes la ruta.]\n")
+		}
+	case m.Path == "":
+	case s.Translator == nil:
+		b.WriteString("[No se ha podido describir: no hay modelo para fotos, audio y vídeo (falta OPENROUTER_API_KEY).]\n")
+	default:
+		s.logf("%s %s: %s", m.emoji(), m.Kind, filepath.Base(m.Path))
+		var status int64
+		if conv != nil {
+			status, _ = conv.Send(ctx, m.emoji()+" "+translatingNotice[m.class()])
+		}
+		text, err := s.Translator.Translate(ctx, m)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ""
+			}
+			s.logf("could not translate %s: %v", m.Path, err)
+			fmt.Fprintf(&b, "[No se ha podido describir: %s]\n", err)
+			if status != 0 {
+				conv.Edit(ctx, status, m.emoji()+" No he podido "+translatingVerb[m.class()]+"lo; sigo con lo que tengo.")
+			}
+			break
+		}
+		fmt.Fprintf(&b, "[%s:\n%s\n]\n", translationTitle[m.class()], text)
+		if status != 0 {
+			// Showing what was heard lets the user catch a bad transcription
+			// before the agent acts on it.
+			done := m.emoji() + " " + translatedNotice[m.class()]
+			if m.class() == classAudio {
+				done = m.emoji() + " «" + truncateRunes(text, 600) + "»"
+			}
+			conv.Edit(ctx, status, done)
+		}
+	}
+
+	if caption != "" {
+		b.WriteString(caption)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+var (
+	translatingNotice = map[mediaClass]string{
+		classImage: "Mirando la imagen…", classAudio: "Escuchando…",
+		classVideo: "Viendo el vídeo…", classPDF: "Leyendo el documento…",
+	}
+	translatingVerb = map[mediaClass]string{
+		classImage: "ver", classAudio: "escuchar", classVideo: "ver", classPDF: "leer",
+	}
+	translatedNotice = map[mediaClass]string{
+		classImage: "Imagen vista.", classVideo: "Vídeo visto.", classPDF: "Documento leído.",
+	}
+	translationTitle = map[mediaClass]string{
+		classImage: "Descripción de la imagen", classAudio: "Transcripción",
+		classVideo: "Contenido del vídeo", classPDF: "Resumen del documento",
+	}
+)
 
 // RunScheduled runs a scheduled task as a turn of its own: it waits for any
 // turn in progress, starts from an empty history so the context does not grow
