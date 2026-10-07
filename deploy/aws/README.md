@@ -120,8 +120,9 @@ aws ssm start-session --target <InstanceId>
 sudo systemctl status kiwi
 sudo journalctl -u kiwi -f        # cada tool call y lo que se bloquea
 
-# actualizar kiwi a la última release
-sudo -H -u kiwi ~/.local/bin/kiwi update && sudo systemctl restart kiwi
+# actualizar kiwi a la última release (ruta completa: un ~ lo expandiría
+# tu shell, la de ec2-user, antes de que sudo cambie de usuario)
+sudo -H -u kiwi /home/kiwi/.local/bin/kiwi update && sudo systemctl restart kiwi
 ```
 
 Lo que haga el agente queda en `/home/kiwi/work/<repo>`. Lo que quieras traerte, que
