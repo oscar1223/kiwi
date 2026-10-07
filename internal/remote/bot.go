@@ -56,6 +56,10 @@ type Bot struct {
 	Log func(string)
 	// OnCallback handles button presses. May be nil.
 	OnCallback CallbackHandler
+	// InboxDir is where photos, audios, videos and documents are saved
+	// before the Handler sees them. Empty means media is not downloaded:
+	// the Handler gets the message without a Path.
+	InboxDir string
 
 	pollTimeout time.Duration
 	minBackoff  time.Duration
@@ -133,16 +137,19 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 }
 
-// dispatch answers an update if it is a private text message from an allowed
-// user. Everything else is dropped without a reply, so a stranger cannot even
-// confirm the bot is running.
+// Unsupported is the reply to a message Kiwi cannot read, such as a sticker.
+const Unsupported = "Eso no lo sé leer. Mándame texto, una foto, un audio, un vídeo o un documento."
+
+// dispatch answers an update if it is a private message from an allowed user.
+// Messages from anyone else are dropped without a reply, so a stranger cannot
+// even confirm the bot is running.
 func (b *Bot) dispatch(ctx context.Context, u Update) {
 	if q := u.CallbackQuery; q != nil {
 		b.dispatchCallback(ctx, *q)
 		return
 	}
 	msg := u.Message
-	if msg == nil || msg.From == nil || msg.Text == "" {
+	if msg == nil || msg.From == nil {
 		return
 	}
 	if !b.allowed[msg.From.ID] {
@@ -155,11 +162,44 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 		return
 	}
 
+	media := msg.Media()
+	if media == nil && msg.Text == "" && msg.Caption == "" {
+		b.Reply(ctx, msg.Chat.ID, Unsupported)
+		return
+	}
+	if media != nil {
+		reply := b.fetch(ctx, *msg, media)
+		if ctx.Err() != nil {
+			return
+		}
+		if reply != "" {
+			b.Reply(ctx, msg.Chat.ID, reply)
+			return
+		}
+		msg.Attachment = media
+	}
+
 	reply := b.handle(ctx, *msg, botChat{b, msg.Chat.ID})
 	if reply == "" || ctx.Err() != nil {
 		return
 	}
 	b.Reply(ctx, msg.Chat.ID, reply)
+}
+
+// fetch downloads a message's media into InboxDir. It returns what to tell the
+// user if that cannot be done, or "" to go on.
+func (b *Bot) fetch(ctx context.Context, msg Message, m *Media) string {
+	if m.File.FileSize > MaxDownload {
+		return fmt.Sprintf("Ese fichero pesa %d MB y un bot de Telegram solo puede descargar hasta %d MB.", m.File.FileSize>>20, MaxDownload>>20)
+	}
+	if b.InboxDir == "" {
+		return ""
+	}
+	if err := b.download(ctx, msg, m, b.InboxDir); err != nil {
+		b.logf("could not download a %s from chat %d: %v", m.Kind, msg.Chat.ID, err)
+		return "No he podido descargar el fichero: " + err.Error()
+	}
+	return ""
 }
 
 // Conversation returns the Conversation for a chat, for work that is not an
