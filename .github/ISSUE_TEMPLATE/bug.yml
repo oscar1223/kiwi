@@ -1,19 +1,19 @@
 name: Bug
-description: Algo de Kiwi no funciona como debería. Entra en el tablero, en Backlog.
+description: Something in Kiwi does not work as it should. Lands on the board, in Backlog.
 labels: [bug]
 projects: ["oscar1223/1"]
 body:
   - type: textarea
     id: what
     attributes:
-      label: Qué pasa
-      description: Lo que ocurre, incluido el mensaje de error si lo hay.
+      label: What happens
+      description: What happens, including the error message if there is one.
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: Cómo reproducirlo
+      label: How to reproduce it
       value: |
         1.
         2.
@@ -22,32 +22,32 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: Qué esperabas
+      label: What you expected
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Versión
-      description: Salida de `kiwi --version` (o `kiwi-dev --version`).
+      label: Version
+      description: Output of `kiwi --version` (or `kiwi-dev --version`).
       placeholder: kiwi version 0.1.0
     validations:
       required: true
   - type: dropdown
     id: channel
     attributes:
-      label: Instalación
+      label: Installation
       options:
         - kiwi (Homebrew)
         - kiwi (install.sh / install.ps1 / Scoop)
         - kiwi-dev (make dev)
-        - Compilado desde fuentes
+        - Built from source
     validations:
       required: true
   - type: dropdown
     id: os
     attributes:
-      label: Sistema
+      label: System
       options:
         - macOS
         - Linux
@@ -57,6 +57,6 @@ body:
   - type: textarea
     id: logs
     attributes:
-      label: Logs o salida
-      description: Opcional. Se formatea como bloque de código.
+      label: Logs or output
+      description: Optional. Formatted as a code block.
       render: shell

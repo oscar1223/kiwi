@@ -1,4 +1,4 @@
-# Instalador de kiwi para Windows.
+# kiwi installer for Windows.
 #   irm https://raw.githubusercontent.com/oscar1223/kiwi/main/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 
@@ -9,7 +9,7 @@ $installDir = if ($env:KIWI_INSTALL_DIR) { $env:KIWI_INSTALL_DIR }
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
   'AMD64' { 'amd64' }
   'ARM64' { 'arm64' }
-  default { throw "Arquitectura no soportada: $env:PROCESSOR_ARCHITECTURE" }
+  default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
 }
 
 $version = if ($env:KIWI_VERSION) { $env:KIWI_VERSION }
@@ -25,12 +25,12 @@ try {
   Invoke-WebRequest "$base/$archive"       -OutFile "$tmp\$archive"
   Invoke-WebRequest "$base/checksums.txt"  -OutFile "$tmp\checksums.txt"
 
-  # Verificar SHA256 antes de tocar nada.
+  # Verify the SHA256 before touching anything.
   $expected = Get-Content "$tmp\checksums.txt" |
     Where-Object { $_ -match "\s$([regex]::Escape($archive))$" } |
     ForEach-Object { ($_ -split '\s+')[0] } |
     Select-Object -First 1
-  if (-not $expected) { throw "$archive no aparece en checksums.txt" }
+  if (-not $expected) { throw "$archive is not listed in checksums.txt" }
 
   $actual = (Get-FileHash "$tmp\$archive" -Algorithm SHA256).Hash.ToLower()
   if ($actual -ne $expected.ToLower()) {
@@ -41,15 +41,15 @@ try {
   New-Item -ItemType Directory -Path $installDir -Force | Out-Null
   Copy-Item "$tmp\kiwi.exe" $installDir -Force
 
-  # PATH de usuario, no de máquina: no pedimos admin.
+  # User PATH, not machine PATH: no admin needed.
   $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
   if ($userPath -notlike "*$installDir*") {
     [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')
-    Write-Host "Anadido $installDir al PATH de usuario. Abre una terminal nueva."
+    Write-Host "Added $installDir to the user PATH. Open a new terminal."
   }
   $env:Path = "$env:Path;$installDir"
 
-  Write-Host "kiwi instalado en $installDir"
+  Write-Host "kiwi installed at $installDir"
   & "$installDir\kiwi.exe" --version
 }
 finally {

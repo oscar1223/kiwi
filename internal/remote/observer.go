@@ -101,7 +101,7 @@ func (o *liveObserver) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			o.flush(ctx, o.render("⏳ Trabajando"))
+			o.flush(ctx, o.render("⏳ Working"))
 		}
 	}
 }
@@ -120,9 +120,9 @@ func (o *liveObserver) finish(ctx context.Context, ok bool) {
 		return // no tool calls: a plain answer needs no progress message
 	}
 
-	header := "✓ Hecho"
+	header := "✓ Done"
 	if !ok {
-		header = "✗ Interrumpido"
+		header = "✗ Interrupted"
 	}
 	o.mu.Lock()
 	o.dirty = true // the header changed even if the lines did not
@@ -149,10 +149,10 @@ func (o *liveObserver) render(header string) string {
 
 	elapsed := time.Since(o.started).Round(time.Second)
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s · %d %s · %s", header, o.calls, plural(o.calls, "paso", "pasos"), elapsed)
+	fmt.Fprintf(&b, "%s · %d %s · %s", header, o.calls, plural(o.calls, "step", "steps"), elapsed)
 	lines := o.lines
 	if hidden := len(lines) - liveLines; hidden > 0 {
-		fmt.Fprintf(&b, "\n… y %d antes", hidden)
+		fmt.Fprintf(&b, "\n… and %d earlier", hidden)
 		lines = lines[hidden:]
 	}
 	for _, l := range lines {

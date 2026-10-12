@@ -106,19 +106,19 @@ func (m *Media) class() mediaClass {
 	return classOther
 }
 
-// label names the media in Spanish, for the chat and for the model.
+// label names the media, for the chat and for the model.
 func (m *Media) label() string {
 	switch m.Kind {
 	case MediaPhoto:
-		return "Foto"
+		return "Photo"
 	case MediaVoice:
-		return "Nota de voz"
+		return "Voice note"
 	case MediaAudio:
 		return "Audio"
 	case MediaVideo:
-		return "Vídeo"
+		return "Video"
 	}
-	return "Documento"
+	return "Document"
 }
 
 func (m *Media) emoji() string {

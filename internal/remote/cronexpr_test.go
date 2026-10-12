@@ -98,17 +98,17 @@ func TestScheduleNeverFires(t *testing.T) {
 
 func TestParseScheduleErrors(t *testing.T) {
 	tests := []struct{ expr, want string }{
-		{"", "5 campos"},
-		{"* * * *", "5 campos"},
-		{"60 * * * *", "minute: 60 está fuera de 0-59"},
+		{"", "5 fields"},
+		{"* * * *", "5 fields"},
+		{"60 * * * *", "minute: 60 is outside 0-59"},
 		{"* 24 * * *", "hour: 24"},
 		{"* * 0 * *", "day of month: 0"},
 		{"* * * 13 *", "month: 13"},
 		{"* * * * 8", "day of week: 8"},
-		{"*/0 * * * *", "paso"},
-		{"10-5 * * * *", "hacia atrás"},
-		{"a * * * *", "no es un número"},
-		{"@sometimes", "5 campos"},
+		{"*/0 * * * *", "step"},
+		{"10-5 * * * *", "goes backwards"},
+		{"a * * * *", "is not a number"},
+		{"@sometimes", "5 fields"},
 	}
 	for _, tt := range tests {
 		_, err := ParseSchedule(tt.expr)

@@ -2,7 +2,7 @@ module github.com/oscar1223/kiwi
 
 go 1.27.0
 
-// Las dependencias de npm del stack de CDK traen ficheros .go de plantilla.
+// The CDK stack's npm dependencies ship template .go files.
 ignore ./deploy/aws/node_modules
 
 require (

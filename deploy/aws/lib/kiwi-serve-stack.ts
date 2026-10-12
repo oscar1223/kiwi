@@ -7,17 +7,17 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
 export interface KiwiServeStackProps extends StackProps {
-  /** Repo de GitHub en el que trabaja el agente (owner/name). Vacío: ninguno. */
+  /** GitHub repo the agent works in (owner/name). Empty: none. */
   readonly repo: string;
-  /** Versión de kiwi a instalar ("v0.2.0"), o "latest". */
+  /** kiwi version to install ("v0.2.0"), or "latest". */
   readonly kiwiVersion: string;
-  /** Tipo de instancia. Tiene que ser arm64 (Graviton). */
+  /** Instance type. Must be arm64 (Graviton). */
   readonly instanceType: string;
-  /** Zona de disponibilidad ("eu-north-1b"). Vacía: la primera de la región. */
+  /** Availability zone ("eu-north-1b"). Empty: the first one in the region. */
   readonly availabilityZone?: string;
 }
 
-/** Claves del secreto. Las vacías no se escriben en el .env. */
+/** Secret keys. Empty ones are not written to the .env. */
 export const SECRET_KEYS = [
   "KIWI_TELEGRAM_TOKEN",
   "KIWI_TELEGRAM_ALLOWED_USERS",
@@ -26,10 +26,10 @@ export const SECRET_KEYS = [
 ] as const;
 
 /**
- * Comando que escribe en la instancia el fichero lib/instance/<name>. Va en
- * base64 porque CloudFormation cambia por "?" lo que no es ASCII en el user
- * data: los acentos llegaban rotos y, como el template guardado no coincidía
- * nunca con el sintetizado, cada diff veía un cambio en la instancia.
+ * Command that writes the file lib/instance/<name> on the instance. It goes
+ * as base64 because CloudFormation replaces non-ASCII in user data with "?":
+ * accents arrived broken and, since the stored template never matched the
+ * synthesized one, every diff saw a change to the instance.
  */
 const writeInstanceFile = (name: string, dest: string) => {
   const b64 = readFileSync(path.join(__dirname, "instance", name)).toString("base64");
@@ -37,10 +37,10 @@ const writeInstanceFile = (name: string, dest: string) => {
 };
 
 /**
- * kiwi serve en un EC2 sin puertos de entrada.
+ * kiwi serve on an EC2 instance with no inbound ports.
  *
- * El bot hace long polling contra Telegram, así que la instancia solo necesita
- * salir por HTTPS: ni SSH, ni IP elástica, ni balanceador. Se entra por SSM
+ * The bot long-polls Telegram, so the instance only needs outbound HTTPS:
+ * no SSH, no Elastic IP, no load balancer. Access is through SSM
  * Session Manager.
  */
 export class KiwiServeStack extends Stack {
@@ -48,12 +48,12 @@ export class KiwiServeStack extends Stack {
     super(scope, id, props);
     Tags.of(this).add("project", "kiwi");
 
-    // Una subred pública en una sola AZ. Un NAT Gateway costaría más que la
-    // instancia y no aporta nada: sin reglas de entrada, la IP pública solo
-    // sirve para salir.
-    // La zona se puede fijar porque a veces una se queda sin capacidad para el
-    // tipo de instancia. Cambiarla en un stack ya desplegado reemplaza la
-    // subred y con ella la instancia.
+    // One public subnet in a single AZ. A NAT Gateway would cost more than the
+    // instance and add nothing: with no inbound rules, the public IP is only
+    // used to go out.
+    // The zone can be pinned because sometimes one runs out of capacity for
+    // the instance type. Changing it on a deployed stack replaces the subnet
+    // and, with it, the instance.
     const vpc = new ec2.Vpc(this, "Vpc", {
       ...(props.availabilityZone ? { availabilityZones: [props.availabilityZone] } : { maxAzs: 1 }),
       natGateways: 0,
@@ -62,24 +62,24 @@ export class KiwiServeStack extends Stack {
 
     const sg = new ec2.SecurityGroup(this, "Sg", {
       vpc,
-      description: "kiwi serve - sin entrada, solo HTTPS de salida",
+      description: "kiwi serve - no inbound, outbound HTTPS only",
       allowAllOutbound: false,
     });
-    // Telegram, el proveedor del modelo, GitHub, los paquetes y SSM van por
-    // 443. El DNS y el NTP de Amazon no pasan por el security group.
+    // Telegram, the model provider, GitHub, packages and SSM all go over
+    // 443. Amazon's DNS and NTP do not go through the security group.
     sg.addEgressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), "HTTPS de salida");
 
     const secret = new secretsmanager.Secret(this, "Env", {
-      description: "Variables de entorno de kiwi serve. Rellenar tras el primer deploy.",
-      // CDK no deja crear un secreto sin valor: el relleno va en "_placeholder"
-      // y kiwi-prepare lo ignora, como a las claves vacías.
+      description: "Environment variables for kiwi serve. Fill in after the first deploy.",
+      // CDK does not allow a secret without a value: the filler goes in
+      // "_placeholder" and kiwi-prepare ignores it, like empty keys.
       generateSecretString: {
         secretStringTemplate: JSON.stringify(Object.fromEntries(SECRET_KEYS.map((k) => [k, ""]))),
         generateStringKey: "_placeholder",
         excludePunctuation: true,
       },
-      // Secrets Manager guarda el secreto borrado 30 días, así que destruir el
-      // stack no lo pierde de golpe.
+      // Secrets Manager keeps a deleted secret for 30 days, so destroying the
+      // stack does not lose it at once.
       removalPolicy: RemovalPolicy.DESTROY,
     });
 
@@ -93,15 +93,15 @@ export class KiwiServeStack extends Stack {
     const userData = ec2.UserData.forLinux();
     userData.addCommands(
       "set -euxo pipefail",
-      // Herramientas para el agente: git y gh para ramas y PRs, go y make
-      // para el repo de kiwi. Go baja la versión que pida go.mod él solo.
+      // Tools for the agent: git and gh for branches and PRs, go and make
+      // for the kiwi repo. Go downloads whatever version go.mod asks for.
       "dnf install -y git make golang python3 'dnf-command(config-manager)'",
       "dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo",
       "dnf install -y gh",
 
-      // Usuario sin sudo, sin contraseña y sin claves SSH.
+      // A user with no sudo, no password and no SSH keys.
       "useradd --create-home --shell /bin/bash kiwi",
-      // El token de GitHub nunca se escribe en el repo: git lo pide aquí.
+      // The GitHub token is never written into the repo: git asks for it here.
       `cat > /home/kiwi/.gitconfig <<'EOF'
 [user]
 	name = Kiwi (EC2)
@@ -124,8 +124,8 @@ EOF`,
       "chmod 755 /usr/local/bin/kiwi-prepare",
       writeInstanceFile("kiwi.service", "/etc/systemd/system/kiwi.service"),
       "systemctl daemon-reload",
-      // Sin valores en el secreto el primer arranque falla y systemd lo
-      // reintenta cada 10 s: en cuanto se rellena, el bot arranca solo.
+      // With no values in the secret the first start fails and systemd
+      // retries every 10 s: as soon as it is filled in, the bot starts.
       "systemctl enable --now kiwi",
     );
 
@@ -134,10 +134,10 @@ EOF`,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       securityGroup: sg,
       instanceType: new ec2.InstanceType(props.instanceType),
-      // Fijada en cdk.context.json. Sin esto, cada deploy busca la última AMI
-      // y, cuando Amazon publica una, reemplaza la instancia y con ella las
-      // sesiones guardadas en el disco. Para actualizarla a propósito:
-      // cdk context --reset <clave> y deploy.
+      // Pinned in cdk.context.json. Without this, every deploy looks up the
+      // latest AMI and, when Amazon publishes one, replaces the instance and
+      // with it the sessions saved on disk. To update it on purpose:
+      // cdk context --reset <key> and deploy.
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
         cpuType: ec2.AmazonLinuxCpuType.ARM_64,
         cachedInContext: true,
@@ -164,30 +164,30 @@ EOF`,
     });
     new CfnOutput(this, "SecretArn", {
       value: secret.secretArn,
-      description: "Rellenar con put-secret-value (ver deploy/aws/README.md)",
+      description: "Fill in with put-secret-value (see deploy/aws/README.md)",
     });
 
-    // Cada excepción a cdk-nag (AwsSolutions), con su porqué.
+    // Every cdk-nag (AwsSolutions) exception, with its reason.
     const acknowledge = (id: string, reason: string) => Validations.of(this).acknowledge({ id, reason });
     acknowledge(
       "AwsSolutions-VPC7",
-      "Sin tráfico de entrada que auditar; los flow logs costarían más que lo que vigilan.",
+      "No inbound traffic to audit; flow logs would cost more than what they watch.",
     );
     acknowledge(
       "AwsSolutions-IAM4[Policy::arn:<AWS::Partition>:iam::aws:policy/AmazonSSMManagedInstanceCore]",
-      "AmazonSSMManagedInstanceCore es la política que AWS mantiene para Session Manager.",
+      "AmazonSSMManagedInstanceCore is the policy AWS maintains for Session Manager.",
     );
     acknowledge(
       "AwsSolutions-SMG4",
-      "Token de bot, API keys y PAT de terceros: no hay rotación automática posible.",
+      "Bot token, API keys and third-party PATs: automatic rotation is not possible.",
     );
     acknowledge(
       "AwsSolutions-EC28",
-      "Una instancia de uso personal; el monitoring básico de 5 min basta.",
+      "A single personal-use instance; basic 5-minute monitoring is enough.",
     );
     acknowledge(
       "AwsSolutions-EC29",
-      "Se recrea con cdk deploy; la protección de terminación estorbaría para destruirla.",
+      "It is recreated with cdk deploy; termination protection would get in the way of destroying it.",
     );
   }
 }

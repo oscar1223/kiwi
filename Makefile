@@ -1,10 +1,10 @@
-# Dos canales de kiwi en la misma máquina:
-#   kiwi      la release de Homebrew, lo mismo que tiene cualquier usuario
-#   kiwi-dev  este código, con su propia config y sus propios datos
+# Two kiwi channels on the same machine:
+#   kiwi      the Homebrew release, the same thing any user has
+#   kiwi-dev  this code, with its own config and its own data
 #
-#   make dev             compila e instala kiwi-dev
-#   make test            lo mismo que ejecuta la CI
-#   make release V=x.y.z etiqueta main y lanza el workflow de release
+#   make dev             builds and installs kiwi-dev
+#   make test            the same thing CI runs
+#   make release V=x.y.z tags main and triggers the release workflow
 
 GOBIN := $(shell go env GOBIN)
 ifeq ($(GOBIN),)
@@ -21,8 +21,8 @@ DEV_CONFIG    := $(CONFIG_HOME)/kiwi-dev
 
 dev:
 	go build -ldflags "-X main.version=dev -X $(PKG)/internal/config.appName=kiwi-dev" -o "$(DEV_BIN)" ./cmd/kiwi
-	@# Primera vez: copia perfiles, claves, MCP y skills para no reconfigurar.
-	@# La memoria, los checkpoints y las sesiones no se copian: son del estable.
+	@# First time: copy profiles, keys, MCP and skills so nothing needs reconfiguring.
+	@# Memory, checkpoints and sessions are not copied: they belong to the stable one.
 	@if [ ! -d "$(DEV_CONFIG)" ]; then \
 		mkdir -p "$(DEV_CONFIG)"; \
 		for f in kiwi.json .env mcp.json; do \
@@ -30,29 +30,29 @@ dev:
 		done; \
 		if [ -f "$(DEV_CONFIG)/.env" ]; then chmod 600 "$(DEV_CONFIG)/.env"; fi; \
 		if [ -d "$(STABLE_CONFIG)/skills" ]; then cp -Rp "$(STABLE_CONFIG)/skills" "$(DEV_CONFIG)/skills"; fi; \
-		echo "Config inicial copiada de $(STABLE_CONFIG) a $(DEV_CONFIG)"; \
+		echo "Initial config copied from $(STABLE_CONFIG) to $(DEV_CONFIG)"; \
 	fi
 	@if [ -e "$(GOBIN)/kiwi" ]; then \
-		echo "aviso: $(GOBIN)/kiwi existe y tapa al kiwi de Homebrew en el PATH. Bórralo con: rm $(GOBIN)/kiwi"; \
+		echo "warning: $(GOBIN)/kiwi exists and shadows the Homebrew kiwi in PATH. Remove it with: rm $(GOBIN)/kiwi"; \
 	fi
-	@echo "kiwi-dev instalado en $(DEV_BIN)"
+	@echo "kiwi-dev installed at $(DEV_BIN)"
 
 test:
 	go vet ./...
 	go test ./...
 
 release:
-	@[ -n "$(V)" ] || { echo "uso: make release V=0.2.0"; exit 1; }
-	@case "$(V)" in v*) echo "error: pon la versión sin la v inicial (make release V=$(patsubst v%,%,$(V)))"; exit 1;; esac
+	@[ -n "$(V)" ] || { echo "usage: make release V=0.2.0"; exit 1; }
+	@case "$(V)" in v*) echo "error: give the version without the leading v (make release V=$(patsubst v%,%,$(V)))"; exit 1;; esac
 	@git fetch --quiet --tags origin
-	@! git rev-parse -q --verify "refs/tags/v$(V)" >/dev/null || { echo "error: el tag v$(V) ya existe"; exit 1; }
-	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || { echo "error: hay que publicar desde main"; exit 1; }
-	@git diff --quiet && git diff --cached --quiet || { echo "error: hay cambios sin commitear"; exit 1; }
-	@[ "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" ] || { echo "error: main no coincide con origin/main (haz pull o push primero)"; exit 1; }
+	@! git rev-parse -q --verify "refs/tags/v$(V)" >/dev/null || { echo "error: tag v$(V) already exists"; exit 1; }
+	@[ "$$(git rev-parse --abbrev-ref HEAD)" = main ] || { echo "error: releases must be cut from main"; exit 1; }
+	@git diff --quiet && git diff --cached --quiet || { echo "error: there are uncommitted changes"; exit 1; }
+	@[ "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/main)" ] || { echo "error: main does not match origin/main (pull or push first)"; exit 1; }
 	$(MAKE) test
 	git tag -a "v$(V)" -m "v$(V)"
 	git push origin "v$(V)"
 	@echo ""
-	@echo "Release v$(V) lanzada: https://github.com/oscar1223/kiwi/actions"
-	@echo "Cuando termine el workflow, actualiza tu kiwi estable con:"
+	@echo "Release v$(V) started: https://github.com/oscar1223/kiwi/actions"
+	@echo "When the workflow finishes, update your stable kiwi with:"
 	@echo "  brew update && brew upgrade --cask kiwi"

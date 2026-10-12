@@ -11,7 +11,7 @@ new KiwiServeStack(app, "KiwiServe", {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION,
   },
-  description: "kiwi serve - bot de Telegram en un EC2 sin puertos de entrada",
+  description: "kiwi serve - Telegram bot on an EC2 instance with no inbound ports",
   repo: app.node.tryGetContext("kiwi:repo") ?? "",
   kiwiVersion: app.node.tryGetContext("kiwi:version") ?? "latest",
   instanceType: app.node.tryGetContext("kiwi:instanceType") ?? "t4g.small",

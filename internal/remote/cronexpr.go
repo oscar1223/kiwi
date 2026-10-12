@@ -50,7 +50,7 @@ func ParseSchedule(expr string) (Schedule, error) {
 	}
 	parts := strings.Fields(expr)
 	if len(parts) != 5 {
-		return Schedule{}, fmt.Errorf("se esperan 5 campos (minuto hora día mes día-de-la-semana) o @daily/@hourly…, y hay %d", len(parts))
+		return Schedule{}, fmt.Errorf("expected 5 fields (minute hour day month day-of-week) or @daily/@hourly…, got %d", len(parts))
 	}
 
 	var bits [5]uint64
@@ -79,7 +79,7 @@ func parseCronField(s string, f cronField) (uint64, error) {
 		if hasStep {
 			n, err := strconv.Atoi(stepStr)
 			if err != nil || n <= 0 {
-				return 0, fmt.Errorf("%s: el paso %q no es un número positivo", f.name, stepStr)
+				return 0, fmt.Errorf("%s: step %q is not a positive number", f.name, stepStr)
 			}
 			step = n
 		}
@@ -97,7 +97,7 @@ func parseCronField(s string, f cronField) (uint64, error) {
 				return 0, err
 			}
 			if lo > hi {
-				return 0, fmt.Errorf("%s: el rango %q va hacia atrás", f.name, rng)
+				return 0, fmt.Errorf("%s: range %q goes backwards", f.name, rng)
 			}
 		default:
 			n, err := cronNumber(rng, f)
@@ -119,10 +119,10 @@ func parseCronField(s string, f cronField) (uint64, error) {
 func cronNumber(s string, f cronField) (int, error) {
 	n, err := strconv.Atoi(s)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %q no es un número", f.name, s)
+		return 0, fmt.Errorf("%s: %q is not a number", f.name, s)
 	}
 	if n < f.min || n > f.max {
-		return 0, fmt.Errorf("%s: %d está fuera de %d-%d", f.name, n, f.min, f.max)
+		return 0, fmt.Errorf("%s: %d is outside %d-%d", f.name, n, f.min, f.max)
 	}
 	return n, nil
 }

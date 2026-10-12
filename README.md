@@ -2,14 +2,14 @@
 
 # Kiwi
 
-Kiwi es un agente de código local-first para la terminal: memoria de conversación, tools
-sobre tu sistema de archivos, ejecución de comandos y una TUI inspirada en herramientas
-como Claude Code. Corre en tu máquina, guarda cada sesión localmente en SQLite y solo actúa
-sobre tu proyecto con el permiso que tú le des.
+Kiwi is a local-first coding agent for the terminal: conversation memory, tools over
+your file system, command execution and a TUI inspired by tools like Claude Code. It
+runs on your machine, saves every session locally in SQLite and only acts on your
+project with the permission you give it.
 
-## Instalación
+## Installation
 
-**macOS y Linux**
+**macOS and Linux**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/oscar1223/kiwi/main/install.sh | sh
@@ -34,303 +34,303 @@ scoop bucket add oscar1223 https://github.com/oscar1223/scoop-bucket
 scoop install kiwi
 ```
 
-También puedes bajar el binario a mano desde
+You can also download the binary by hand from
 [Releases](https://github.com/oscar1223/kiwi/releases).
 
-> En macOS, un archivo descargado **con el navegador** queda en cuarentena.
-> Si Gatekeeper lo bloquea: `xattr -d com.apple.quarantine ./kiwi`.
-> Bajarlo con `curl` o instalarlo con `brew` no tiene ese problema.
+> On macOS, a file downloaded **with the browser** is quarantined.
+> If Gatekeeper blocks it: `xattr -d com.apple.quarantine ./kiwi`.
+> Downloading it with `curl` or installing it with `brew` does not have that problem.
 
-> En Windows, la herramienta `bash` de Kiwi ejecuta los comandos con `bash -c`,
-> así que necesitas **Git Bash o WSL** en el `PATH`. Sin ellos el binario
-> arranca y la TUI funciona, pero cualquier comando que el agente intente
-> ejecutar fallará.
+> On Windows, Kiwi's `bash` tool runs commands with `bash -c`, so you need
+> **Git Bash or WSL** on your `PATH`. Without them the binary starts and the TUI
+> works, but any command the agent tries to run will fail.
 
-### Desde fuentes
+### From source
 
-Requiere Go 1.27+:
+Requires Go 1.27+:
 
 ```sh
 go install github.com/oscar1223/kiwi/cmd/kiwi@latest
 ```
 
-O compilando desde el repo:
+Or building from the repo:
 
 ```sh
 go build -o kiwi ./cmd/kiwi
 ```
 
-## Actualizar
+## Updating
 
 ```sh
 kiwi update
 ```
 
-Descarga la build de tu plataforma, **verifica el SHA256** contra los checksums
-publicados con la release y reemplaza el binario en marcha. En Unix el reemplazo
-es un `rename` atómico, así que la sesión que lanzó el comando sigue viva con el
-binario anterior; en Windows el `.exe` viejo se aparta y se borra al siguiente
-arranque, porque Windows no deja eliminar un ejecutable en uso.
+It downloads the build for your platform, **verifies the SHA256** against the checksums
+published with the release and replaces the running binary. On Unix the replacement is
+an atomic `rename`, so the session that launched the command stays alive on the old
+binary; on Windows the old `.exe` is moved aside and deleted on the next start, because
+Windows does not let you delete an executable that is in use.
 
-Si kiwi lo instaló un gestor de paquetes, **el binario es suyo**: sobrescribirlo
-a mano dejaría a Homebrew o Scoop apuntando a una versión que ya no está en
-disco. En ese caso `kiwi update` detecta el canal y te da el comando correcto en
-vez de tocar el fichero:
+If kiwi was installed by a package manager, **the binary is the manager's**: overwriting
+it by hand would leave Homebrew or Scoop pointing at a version that is no longer on disk.
+In that case `kiwi update` detects the channel and gives you the right command instead of
+touching the file:
 
-| Instalado con | `kiwi update` te dice |
+| Installed with | `kiwi update` tells you |
 | --- | --- |
-| script o descarga manual | *(se actualiza solo)* |
+| script or manual download | *(updates itself)* |
 | Homebrew | `brew upgrade --cask kiwi` |
 | Scoop | `scoop update kiwi` |
 | `go install` | `go install github.com/oscar1223/kiwi/cmd/kiwi@latest` |
 
-`kiwi update --check` solo mira si hay algo nuevo, sin instalar nada.
+`kiwi update --check` only looks for something new, without installing anything.
 
-Al arrancar, kiwi comprueba **como mucho una vez al día** si hay versión nueva y
-lo menciona en una línea. La comprobación nunca bloquea el arranque y nunca
-escribe un error —una que se queja de la red es peor que no tenerla—. Para
-apagarla: `KIWI_NO_UPDATE_CHECK=1`.
+On startup, kiwi checks **at most once a day** whether there is a new version and
+mentions it in one line. The check never blocks startup and never prints an error — one
+that complains about the network is worse than not having it. To turn it off:
+`KIWI_NO_UPDATE_CHECK=1`.
 
-## Primer uso
+## First run
 
 ```sh
 kiwi
 ```
 
-Sin ningún proveedor configurado, la primera vez que arrancas `kiwi` un asistente de
-onboarding te pide el proveedor (Anthropic o cualquier API compatible con OpenAI — OpenAI,
-Ollama, OpenRouter, Groq...), el modelo y la API key, y lo deja todo listo para chatear.
-Se puede repetir o ajustar luego con `/settings` → `Model profiles`, o directamente
-`/model`.
+With no provider configured, the first time you start `kiwi` an onboarding wizard asks
+for the provider (Anthropic or any OpenAI-compatible API — OpenAI, Ollama, OpenRouter,
+Groq...), the model and the API key, and leaves everything ready to chat. You can redo or
+adjust it later with `/settings` → `Model profiles`, or directly with `/model`.
 
-## Modos de permiso
+## Permission modes
 
-Kiwi opera siempre en uno de tres modos, que determinan qué puede hacer sin pedirte
-confirmación:
+Kiwi always runs in one of three modes, which decide what it can do without asking you:
 
-| Modo   | Qué permite                                  |
+| Mode   | What it allows                               |
 |--------|-----------------------------------------------|
-| `ask`  | confirma cada acción antes de ejecutarla (por defecto) |
-| `plan` | solo lectura — no puede editar ni ejecutar comandos |
-| `work` | aplica ediciones, comandos y herramientas MCP automáticamente; solo pregunta ante comandos peligrosos (rm -rf, sudo, force push, ...) |
+| `ask`  | confirms every action before running it (default) |
+| `plan` | read-only — cannot edit or run commands |
+| `work` | applies edits, commands and MCP tools automatically; only asks for dangerous commands (rm -rf, sudo, force push, ...) |
 
-Se eligen con `--mode` al arrancar, se cambian en caliente con `/ask` `/plan` `/work`, o
-ciclando con `shift+tab`.
+Pick one with `--mode` at startup, switch on the fly with `/ask` `/plan` `/work`, or
+cycle with `shift+tab`.
 
-## Comandos de la TUI
+## TUI commands
 
-Escribir `/` muestra y filtra la lista de comandos disponibles según lo que vayas
-tecleando (flechas para navegar, `tab` o `enter` para completar).
+Typing `/` shows the available commands and filters them as you type (arrows to
+navigate, `tab` or `enter` to complete).
 
-| Comando      | Qué hace                                            |
+| Command      | What it does                                         |
 |--------------|------------------------------------------------------|
-| `/init`      | escribe o actualiza `KIWI.md` leyendo el proyecto antes |
-| `/status`    | todo lo de esta sesión en una pantalla                 |
-| `/context`   | qué está llenando la ventana de contexto               |
-| `/tools`     | lista las tools, o apaga una para esta sesión          |
-| `/undo`      | deshace el último turno: ficheros y conversación       |
-| `/redo`      | rehace lo que `/undo` quitó                            |
-| `/diff`      | qué ha cambiado en la sesión (`/diff turn`, el último) |
-| `/review`    | revisa los cambios actuales con un agente aparte       |
-| `/settings`  | menú agrupado con todo lo de abajo                    |
-| `/model`     | cambia o gestiona perfiles de modelo                  |
-| `/reasoning` | cuánto piensa el modelo: `off` … `max` (se guarda en el perfil) |
-| `/config`    | gestiona variables de `.env`                          |
-| `/mcp`       | gestiona servidores MCP                               |
-| `/doctor`    | qué vías para llegar a internet funcionan aquí         |
-| `/skill`     | gestiona skills                                       |
-| `/theme`     | cambia el tema de color, con vista previa en vivo      |
-| `/sessions`  | cambia entre conversaciones guardadas del proyecto     |
-| `/memory`    | ve o edita lo que kiwi recuerda                        |
-| `/compact`   | resume la conversación para liberar contexto           |
-| `/clear`     | olvida la conversación actual                          |
-| `/help`      | lista todos los comandos y atajos                      |
-| `/quit`      | sale de kiwi                                           |
+| `/init`      | writes or updates `KIWI.md` after reading the project |
+| `/status`    | everything about this session on one screen          |
+| `/context`   | what is filling the context window                   |
+| `/tools`     | lists the tools, or turns one off for this session   |
+| `/undo`      | undoes the last turn: files and conversation         |
+| `/redo`      | redoes what `/undo` removed                          |
+| `/diff`      | what changed in the session (`/diff turn`, the last one) |
+| `/review`    | reviews the current changes with a separate agent    |
+| `/settings`  | grouped menu with everything below                   |
+| `/model`     | switches or manages model profiles                   |
+| `/reasoning` | how much the model thinks: `off` … `max` (saved in the profile) |
+| `/config`    | manages `.env` variables                             |
+| `/mcp`       | manages MCP servers                                  |
+| `/doctor`    | which ways of reaching the internet work here        |
+| `/skill`     | manages skills                                       |
+| `/theme`     | changes the color theme, with a live preview         |
+| `/sessions`  | switches between the project's saved conversations   |
+| `/memory`    | shows or edits what kiwi remembers                   |
+| `/compact`   | summarizes the conversation to free up context       |
+| `/clear`     | forgets the current conversation                     |
+| `/help`      | lists every command and shortcut                     |
+| `/quit`      | exits kiwi                                           |
 
-## Herramientas del agente
+## Agent tools
 
-- `read_file` / `write_file` / `edit_file` — lectura y edición del sistema de archivos,
-  con diff antes de aplicar.
-- `multi_edit` — varias sustituciones sobre un mismo fichero en una llamada. O se
-  aplican todas o no se toca el fichero: un lote que fallara a medias dejaría el
-  fichero en un estado que nadie pidió.
-- `grep` / `glob` / `ls` — búsqueda por contenido, por nombre y listado de un
-  directorio. No piden permiso (como `read_file`) y saltan solas `.git`,
-  `node_modules` y compañía. Preferibles a llamar a `grep` o `find` por `bash`:
-  no dependen de qué binarios haya instalados.
-- `todo_write` / `todo_read` — la lista de tareas del trabajo en curso. Es lo que
-  mantiene el rumbo en tareas largas, y de paso te enseña por dónde va.
-- `web_fetch` — lee una URL y devuelve el texto, con el HTML ya limpio. Rechaza
-  direcciones de loopback, privadas y link-local —incluida `169.254.169.254`, la de
-  metadatos de las nubes— y lo comprueba al abrir la conexión, así que una
-  redirección hacia dentro tampoco cuela. Libre en `plan` y `work`, pregunta en `ask`.
-  Con `reader: true` la página se renderiza en [Jina Reader](https://jina.ai/reader)
-  (`r.jina.ai`) y vuelve como markdown: sirve para webs hechas con JavaScript. Esa
-  URL sí pasa por un tercero, y el aviso de permiso lo dice.
-- `web_search` — busca en la web y devuelve título, URL y fragmento. Usa Exa si hay
-  `EXA_API_KEY`, Jina si hay `JINA_API_KEY` y, sin clave, DuckDuckGo. Mismos permisos
-  que `web_fetch`.
-- `bash` — ejecuta comandos; en segundo plano con `background_bash` /
-  `background_output` / `kill_shell` para procesos de larga duración.
-- `task` — lanza subagentes para investigación o trabajo en paralelo.
-- `load_skill` — carga instrucciones bajo demanda desde skills instaladas.
-- `remember` — guarda un hecho duradero en la memoria (ver más abajo). Pasa por el
-  mismo permiso que una escritura de fichero: en `plan` está bloqueado, en `ask` te
-  pregunta, en `work` se guarda solo.
-- `ask_questions` — el modelo te hace hasta varias preguntas de opción múltiple (con
-  hueco para respuesta libre y, si aplica, selección múltiple) antes de darte un plan
-  cerrado, igual que hace Claude Code. Disponible en cualquier modo, pero pensada sobre
-  todo para `plan`: mejor preguntar una vez que planear sobre una suposición. Solo se
-  registra en la TUI — `kiwi ask` no tiene a quién preguntarle, así que ahí ni aparece.
-- Cualquier tool expuesta por un servidor MCP configurado se añade automáticamente,
-  detrás del mismo permiso que las tools nativas.
+- `read_file` / `write_file` / `edit_file` — reading and editing the file system, with a
+  diff before applying.
+- `multi_edit` — several replacements in the same file in one call. Either all of them
+  apply or the file is left alone: a batch that failed halfway would leave the file in a
+  state nobody asked for.
+- `grep` / `glob` / `ls` — search by content, by name, and directory listing. They do not
+  ask for permission (like `read_file`) and skip `.git`, `node_modules` and friends on
+  their own. Better than calling `grep` or `find` through `bash`: they do not depend on
+  which binaries are installed.
+- `todo_write` / `todo_read` — the task list for the work in progress. It is what keeps
+  long tasks on course, and it also shows you where things are.
+- `web_fetch` — reads a URL and returns the text, with the HTML already cleaned up. It
+  rejects loopback, private and link-local addresses — including `169.254.169.254`, the
+  cloud metadata one — and checks this when opening the connection, so a redirect
+  inwards does not sneak through either. Free in `plan` and `work`, asks in `ask`.
+  With `reader: true` the page is rendered by [Jina Reader](https://jina.ai/reader)
+  (`r.jina.ai`) and comes back as markdown: useful for JavaScript-built sites. That URL
+  does go through a third party, and the permission prompt says so.
+- `web_search` — searches the web and returns title, URL and snippet. Uses Exa if
+  `EXA_API_KEY` is set, Jina if `JINA_API_KEY` is set and, with no key, DuckDuckGo. Same
+  permissions as `web_fetch`.
+- `bash` — runs commands; in the background with `background_bash` /
+  `background_output` / `kill_shell` for long-running processes.
+- `task` — launches subagents for research or parallel work.
+- `load_skill` — loads instructions on demand from installed skills.
+- `remember` — saves a durable fact to memory (see below). It goes through the same
+  permission as a file write: blocked in `plan`, asks in `ask`, saved automatically in
+  `work`.
+- `ask_questions` — the model asks you up to several multiple-choice questions (with
+  room for a free answer and, where it fits, multiple selection) before giving you a
+  final plan, just like Claude Code does. Available in any mode, but meant mostly for
+  `plan`: better to ask once than to plan on an assumption. Only registered in the TUI —
+  `kiwi ask` has nobody to ask, so it does not show up there.
+- Any tool exposed by a configured MCP server is added automatically, behind the same
+  permission as the native tools.
 
-## Memoria y contexto
+## Memory and context
 
-Kiwi distingue dos cosas que se suelen confundir:
+Kiwi keeps apart two things that are often confused:
 
-- **La conversación** — grande, propia de la sesión, y se compacta sola cuando crece.
-  El umbral sale de la ventana de contexto real del modelo del perfil activo (la mitad
-  de la ventana), así que un modelo de 200k no se compacta con el mismo criterio que uno
-  de 32k. Cuando salta, los mensajes viejos se sustituyen por un resumen y los recientes
-  siguen tal cual. `/compact` fuerza esa compactación cuando quieras, sin esperar al
-  umbral. La línea de estado muestra `ctx N%` de la ventana ocupada, y cambia de color
-  al 50% y al 80%.
-- **Las notas guardadas** — un puñado de líneas que sobreviven a la sesión y viajan en
-  cada prompt. Dos ámbitos: `global` (sobre ti, en todos los proyectos) y `project`
-  (solo sobre este directorio). Las escribe el modelo con la tool `remember`, o tú desde
-  `/memory`. Cada ámbito tiene un tope de caracteres; al pasarse se caen las notas más
-  antiguas y kiwi lo dice en vez de olvidar en silencio.
+- **The conversation** — large, specific to the session, and compacted automatically as
+  it grows. The threshold comes from the real context window of the active profile's
+  model (half the window), so a 200k model is not compacted on the same terms as a 32k
+  one. When it triggers, old messages are replaced by a summary and recent ones stay as
+  they are. `/compact` forces that compaction whenever you want, without waiting for the
+  threshold. The status line shows `ctx N%` of the window in use, and changes color at
+  50% and 80%.
+- **Saved notes** — a handful of lines that outlive the session and travel with every
+  prompt. Two scopes: `global` (about you, across all projects) and `project` (only about
+  this directory). The model writes them with the `remember` tool, or you do from
+  `/memory`. Each scope has a character cap; when it is exceeded the oldest notes drop
+  off and kiwi says so instead of forgetting silently.
 
-Las notas viven en `~/.config/kiwi/memory/` (`global.md` y `projects/<proyecto>.md`), no
-dentro del repositorio: lo que kiwi se anota para sí mismo no debería aparecer nunca en
-tu `git status`. Para instrucciones compartidas y versionadas ya está `KIWI.md`/`AGENTS.md`,
-que kiwi lee y nunca escribe.
+Notes live in `~/.config/kiwi/memory/` (`global.md` and `projects/<project>.md`), not
+inside the repository: what kiwi notes down for itself should never show up in your
+`git status`. For shared, versioned instructions there is already `KIWI.md`/`AGENTS.md`,
+which kiwi reads and never writes.
 
-### Adjuntar ficheros con `@`
+### Attaching files with `@`
 
-En la TUI, escribir `@ruta/al/fichero` mete su contenido en el mensaje que recibe el
-modelo, sin que tenga que llamar a `read_file`:
+In the TUI, typing `@path/to/file` puts its contents into the message the model gets,
+without it having to call `read_file`:
 
 ```
-› ¿por qué falla @internal/agent/agent.go en el test de @internal/agent/agent_test.go?
+› why does @internal/agent/agent.go fail in the test in @internal/agent/agent_test.go?
 ```
 
-La transcripción sigue mostrando lo que escribiste tú; el contenido se añade por debajo.
-Si una ruta no existe, kiwi lo dice en vez de preguntar sobre un fichero que nunca llegó.
+The transcript still shows what you typed; the contents are added underneath. If a path
+does not exist, kiwi says so instead of asking about a file that never arrived.
 
-## Sesiones
+## Sessions
 
-Cada conversación se persiste al vuelo en SQLite, por proyecto:
+Every conversation is persisted on the fly to SQLite, per project:
 
 ```sh
-kiwi --continue          # retoma la sesión más reciente de este directorio
-kiwi --resume <id>       # retoma una sesión concreta
-kiwi session list        # lista las sesiones guardadas para este proyecto
+kiwi --continue          # resume the most recent session in this directory
+kiwi --resume <id>       # resume a specific session
+kiwi session list        # list the saved sessions for this project
 ```
 
-Dentro de la TUI, `/sessions` hace lo mismo sin salir de la conversación.
+Inside the TUI, `/sessions` does the same without leaving the conversation.
 
 ## `kiwi ask`
 
-Para un solo turno no interactivo, pensado para componer con pipes:
+For a single non-interactive turn, meant to be composed with pipes:
 
 ```sh
-kiwi ask "¿qué hace este repo?"
-git diff | kiwi ask "revisa este patch" -
+kiwi ask "what does this repo do?"
+git diff | kiwi ask "review this patch" -
 ```
 
-Por defecto es de solo lectura; `--mode work` permite editar, y `--yolo` además ejecuta
-comandos sin pedir confirmación.
+It is read-only by default; `--mode work` allows edits, and `--yolo` also runs commands
+without asking.
 
-## `kiwi serve` (Telegram, en desarrollo)
+## `kiwi serve` (Telegram)
 
-Kiwi como bot de Telegram, para mandarle tareas desde el móvil. Cada mensaje es una
-tarea para el agente, que trabaja en el directorio donde lo arrancas (o `--cwd`) y te
-contesta al terminar. Mientras, un mensaje se va actualizando con lo que hace
-(`● bash: go test ./...`), y las respuestas largas llegan en varios mensajes. Es la épica [#6](https://github.com/oscar1223/kiwi/issues/6), aún
-en marcha.
+Kiwi as a Telegram bot, to send it tasks from your phone. Every message is a task for
+the agent, which works in the directory you start it in (or `--cwd`) and replies when it
+is done. Meanwhile, a message keeps updating with what it is doing
+(`● bash: go test ./...`), and long answers arrive split over several messages. It also
+understands photos, voice notes, audio, video and documents. This is epic
+[#6](https://github.com/oscar1223/kiwi/issues/6).
 
-1. Crea un bot con [@BotFather](https://t.me/BotFather) y copia su token.
-2. Saca tu user ID con [@userinfobot](https://t.me/userinfobot).
-3. Ponlos en el `.env` de Kiwi (`~/.config/kiwi/.env`), nunca en un repo:
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
+2. Get your user ID from [@userinfobot](https://t.me/userinfobot).
+3. Put them in Kiwi's `.env` (`~/.config/kiwi/.env`), never in a repo:
 
    ```sh
    KIWI_TELEGRAM_TOKEN=123456:ABC...
    KIWI_TELEGRAM_ALLOWED_USERS=11111111
    ```
 
-4. `kiwi serve` desde el directorio del proyecto.
+4. Run `kiwi serve` from the project directory.
 
-Va en modo `work`: edita ficheros y ejecuta comandos sin preguntar. Lo que el modo aún
-pediría confirmar (un `rm -rf`, un `sudo`, un force push…) te llega como mensaje con
-botones **Permitir** y **Denegar**; si no contestas en 5 minutos (`--approval-timeout`),
-se deniega. `--mode plan` lo deja en solo
-lectura. Sigue la última conversación del directorio, así que reiniciarlo no pierde el
-hilo; `/new` empieza una nueva. Solo hace una tarea a la vez: si le escribes mientras
-trabaja, te dice que está ocupado.
+It runs in `work` mode: it edits files and runs commands without asking. Whatever the
+mode would still ask about (an `rm -rf`, a `sudo`, a force push…) reaches you as a
+message with **Allow** and **Deny** buttons; if you do not answer within 5 minutes
+(`--approval-timeout`), it is denied. `--mode plan` makes it read-only. It continues the
+directory's last conversation, so restarting it does not lose the thread; `/new` starts
+a new one. It only does one task at a time: if you write while it is working, it tells
+you it is busy.
 
-### Tareas programadas
+### Scheduled tasks
 
-`/cron` programa tareas que Kiwi hace solo y te manda al chat, con el mismo mensaje en
-vivo y los mismos botones de aprobación:
+`/cron` schedules tasks that Kiwi does on its own and sends to the chat, with the same
+live message and the same approval buttons:
 
 ```
-/cron add "0 9 * * 1-5" revisa los PRs abiertos y resúmelos
-/cron add @daily resume los commits de ayer
+/cron add "0 9 * * 1-5" review the open PRs and summarize them
+/cron add @daily summarize yesterday's commits
 /cron list
 /cron pause 3 · /cron resume 3 · /cron rm 3 · /cron run 3
 ```
 
-Las horas van en la zona de `KIWI_TZ` (por defecto `Europe/Madrid`; un servidor suele
-estar en UTC). Cada ejecución es una conversación nueva, aparte de la del chat, y si el
-bot estaba apagado a la hora de una tarea no se recupera: se espera a la siguiente.
+Times are in the `KIWI_TZ` zone (default `Europe/Madrid`; a server is usually on UTC).
+Every run is a new conversation, separate from the chat's, and if the bot was off when a
+task was due it is not caught up: it waits for the next one.
 
-Solo contesta a los IDs de la lista y solo en chats privados; a cualquier otro no le
-responde nada. Usa long polling, así que no abre ningún puerto. Trata el token como
-una contraseña: con él se pueden leer los mensajes que le mandas al bot y contestar
-en su nombre. Y **quien entre en tu cuenta de Telegram
-puede ejecutar código en la máquina donde corre**.
+It only answers the IDs on the list and only in private chats; anyone else gets no reply
+at all. It uses long polling, so it opens no port. Treat the token like a password: with
+it, anyone can read the messages you send the bot and reply in its name. And **whoever
+gets into your Telegram account can run code on the machine where it runs**.
 
-Para tenerlo siempre encendido en un EC2, sin puertos abiertos, está el stack de CDK de
+To keep it always on in EC2, with no open ports, there is the CDK stack in
 [`deploy/aws`](deploy/aws/README.md).
 
-## Configuración
+## Configuration
 
-Todo vive bajo `~/.config/kiwi/` (u `$XDG_CONFIG_HOME/kiwi/`):
+Everything lives under `~/.config/kiwi/` (or `$XDG_CONFIG_HOME/kiwi/`):
 
-- `kiwi.json` — perfiles de modelo y perfil activo. Perfiles de ejemplo ya incluidos:
-  - `sonnet` y `opus` (Anthropic, `ANTHROPIC_API_KEY`), `gpt` (OpenAI, `OPENAI_API_KEY`),
-    `local` (cualquier servidor compatible con la API de OpenAI, como Ollama, en
+- `kiwi.json` — model profiles and the active profile. Example profiles included:
+  - `sonnet` and `opus` (Anthropic, `ANTHROPIC_API_KEY`), `gpt` (OpenAI, `OPENAI_API_KEY`),
+    `local` (any server compatible with the OpenAI API, such as Ollama, at
     `http://localhost:11434/v1`).
-  - Cualquier proveedor que hable el formato chat-completions de OpenAI funciona solo
-    cambiando `base_url` y la env var de la key — ya vienen listos `openrouter`
+  - Any provider that speaks OpenAI's chat-completions format works just by changing
+    `base_url` and the key's env var — ready to go are `openrouter`
     (`OPENROUTER_API_KEY`), `groq` (`GROQ_API_KEY`), `deepseek` (`DEEPSEEK_API_KEY`),
     `mistral` (`MISTRAL_API_KEY`), `xai` (`XAI_API_KEY`), `cerebras`
     (`CEREBRAS_API_KEY`), `perplexity` (`PERPLEXITY_API_KEY`), `together`
     (`TOGETHER_API_KEY`), `fireworks` (`FIREWORKS_API_KEY`), `deepinfra`
-    (`DEEPINFRA_API_KEY`), `moonshot` (`MOONSHOT_API_KEY`), `zhipu` (`ZHIPU_API_KEY`) y
-    `gemini` (`GEMINI_API_KEY`, vía el endpoint de Gemini compatible con OpenAI). Los
-    modelos de estos perfiles son ejemplos — ajústalos con `/model` según lo que tenga
-    cada proveedor en cada momento.
-  - Tres perfiles más necesitan credenciales de nube, no solo una API key — no son
-    zero-config como los de arriba:
-    - `azure` — Azure OpenAI. Necesita `AZURE_RESOURCE_NAME` y `AZURE_API_KEY`; el
-      `model` del perfil es el nombre del *deployment*, no el modelo en sí.
-    - `vertex` — modelos Claude en Google Vertex AI. Necesita `GOOGLE_VERTEX_PROJECT` y
-      `GOOGLE_VERTEX_LOCATION`, y credenciales de aplicación por defecto (ADC) — normalmente
-      vía `GOOGLE_APPLICATION_CREDENTIALS` apuntando a una service account, o `gcloud auth
+    (`DEEPINFRA_API_KEY`), `moonshot` (`MOONSHOT_API_KEY`), `zhipu` (`ZHIPU_API_KEY`) and
+    `gemini` (`GEMINI_API_KEY`, through Gemini's OpenAI-compatible endpoint). The models
+    in these profiles are examples — adjust them with `/model` to whatever each provider
+    offers at the time.
+  - Three more profiles need cloud credentials, not just an API key — they are not
+    zero-config like the ones above:
+    - `azure` — Azure OpenAI. Needs `AZURE_RESOURCE_NAME` and `AZURE_API_KEY`; the
+      profile's `model` is the *deployment* name, not the model itself.
+    - `vertex` — Claude models on Google Vertex AI. Needs `GOOGLE_VERTEX_PROJECT` and
+      `GOOGLE_VERTEX_LOCATION`, plus Application Default Credentials (ADC) — usually via
+      `GOOGLE_APPLICATION_CREDENTIALS` pointing at a service account, or `gcloud auth
       application-default login`.
-    - `bedrock` — modelos Claude en AWS Bedrock. Usa la cadena de credenciales estándar de
-      AWS (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`, un perfil compartido, o
+    - `bedrock` — Claude models on AWS Bedrock. Uses the standard AWS credential chain
+      (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_REGION`, a shared profile, or
       `AWS_BEARER_TOKEN_BEDROCK`).
-- `.env` — API keys y demás variables, gestionadas con `/config`.
+- `.env` — API keys and other variables, managed with `/config`.
+- `mcp.json` — MCP servers, over stdio or remote (HTTP/SSE).
+- `skills/` — Markdown skills the model loads on demand.
+- `memory/` — durable notes: `global.md` and one per project in `projects/`.
 
-### Razonamiento
+### Reasoning
 
-Cada perfil puede fijar cuánto piensa el modelo antes de responder con `reasoning`:
-`off`, `low`, `medium`, `high`, `xhigh` o `max`. Sin el campo, manda el proveedor
-(muchos modelos razonan por defecto: GLM 5.2 por OpenRouter lo hace con `high`).
+Each profile can set how much the model thinks before answering with `reasoning`:
+`off`, `low`, `medium`, `high`, `xhigh` or `max`. Without the field, the provider decides
+(many models reason by default: GLM 5.2 through OpenRouter does it at `high`).
 
 ```json
 "glm": {
@@ -342,115 +342,96 @@ Cada perfil puede fijar cuánto piensa el modelo antes de responder con `reasoni
 }
 ```
 
-`/reasoning` lo cambia en vivo y lo guarda en el perfil activo (`/reasoning high`, o sin
-argumento para elegir de una lista). La barra de estado muestra el nivel, y mientras el
-modelo razona la línea del spinner enseña `thinking…` con lo último que está pensando.
+`/reasoning` changes it live and saves it in the active profile (`/reasoning high`, or
+with no argument to pick from a list). The status bar shows the level, and while the
+model reasons the spinner line shows `thinking…` with the latest thing it is thinking.
 
-Cómo llega a cada proveedor:
+How it reaches each provider:
 
-| Proveedor | Qué se envía |
+| Provider | What is sent |
 | --- | --- |
-| OpenRouter | `reasoning: {effort}` o `{enabled: false}`; su `reasoning_details` se devuelve en los turnos con herramientas |
-| Z.ai (GLM directo) | `thinking: {type: enabled/disabled}` — solo encendido o apagado |
-| OpenAI y compatibles | `reasoning_effort` (`off` es `none`) |
-| Anthropic, Bedrock, Vertex | thinking adaptativo + `effort`; los bloques firmados vuelven en cada turno. En modelos que no dejan apagarlo (Opus 5.5, Fable), `off` es el esfuerzo mínimo; Haiku 4.5 y anteriores usan un presupuesto de tokens |
-- `mcp.json` — servidores MCP, por stdio o remotos (HTTP/SSE).
-- `skills/` — skills en Markdown que el modelo carga bajo demanda.
-- `memory/` — notas duraderas: `global.md` y una por proyecto en `projects/`.
+| OpenRouter | `reasoning: {effort}` or `{enabled: false}`; its `reasoning_details` are sent back on tool turns |
+| Z.ai (GLM direct) | `thinking: {type: enabled/disabled}` — on or off only |
+| OpenAI and compatibles | `reasoning_effort` (`off` is `none`) |
+| Anthropic, Bedrock, Vertex | adaptive thinking + `effort`; signed blocks go back on every turn. On models that cannot turn it off (Opus 5.5, Fable), `off` is the minimum effort; Haiku 4.5 and earlier use a token budget |
 
-## Telemetría (opcional)
+## Telemetry (optional)
 
-Kiwi traza cada sesión vía OpenTelemetry si detecta configuración:
+Kiwi traces each session through OpenTelemetry if it finds configuration:
 
-- Variables `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — cualquier
-  backend OTel estándar.
-- O `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` (y opcionalmente `LANGFUSE_HOST` para
-  una instancia propia) para [Langfuse](https://langfuse.com).
+- `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — any standard
+  OTel backend.
+- Or `LANGFUSE_PUBLIC_KEY` + `LANGFUSE_SECRET_KEY` (and optionally `LANGFUSE_HOST` for a
+  self-hosted instance) for [Langfuse](https://langfuse.com).
 
-Sin ninguna de las dos, Kiwi no traza nada.
+With neither, Kiwi traces nothing.
 
-## Desarrollo
+## Undo
 
-```sh
-go build ./...
-go vet ./...
-gofmt -l cmd internal
-go test ./... -race
-```
+Before every turn that can write, kiwi takes a **snapshot of the working tree**. `/undo`
+restores it — the files *and* the conversation, because restoring the files while
+leaving the model convinced of an edit that no longer exists is worse than not undoing
+anything — and `/redo` applies it again. `/diff` shows what has piled up since the
+session started.
 
-## Licencia
+Snapshots live in a git repository **of kiwi's own**, under
+`~/.config/kiwi/checkpoints/`, pointed at the project with `GIT_WORK_TREE`. Your index,
+your stash, your hooks and your history are never touched: kiwi never names your
+`.git`. The project does need to be a git repository — not for the shadow repo, but
+because `.gitignore` is what stops a snapshot from swallowing `node_modules` —; where it
+is not, kiwi says so once at startup and carries on without a safety net.
 
-MIT — ver [LICENSE](LICENSE).
+This matters most in **work mode**, which applies edits and commands without asking: it
+is the way back that replaces the confirmation that is no longer there.
 
-## Deshacer
+## Diagnostics and LSP
 
-Antes de cada turno que puede escribir, kiwi hace una **instantánea del árbol de
-trabajo**. `/undo` la restaura —los ficheros *y* la conversación, porque devolver
-los ficheros y dejar al modelo convencido de una edición que ya no existe es peor
-que no deshacer nada— y `/redo` la vuelve a aplicar. `/diff` enseña lo acumulado
-desde que arrancó la sesión.
+After every `write_file`, `edit_file` or `multi_edit`, kiwi runs **the project's own
+checker** over the touched package — `go vet` with `go.mod`, `tsc --noEmit` with
+`tsconfig.json`, `ruff` with `pyproject.toml` — and adds whatever it finds to the same
+observation the model reads. That way it learns it broke the build right there, not
+three calls later when it has already built on top. It can be replaced with
+`KIWI_DIAGNOSTICS_CMD` (a `{}` in the command marks where the path goes; if there is
+none, it is appended at the end).
 
-Las instantáneas viven en un repositorio git **propio de kiwi**, bajo
-`~/.config/kiwi/checkpoints/`, apuntado al proyecto con `GIT_WORK_TREE`. Tu
-índice, tu stash, tus hooks y tu historial no se tocan en ningún momento: kiwi
-nunca nombra tu `.git`. Hace falta que el proyecto sea un repositorio git —no por
-el repo sombra, sino porque `.gitignore` es lo que impide que una instantánea se
-trague `node_modules`—; donde no lo sea, kiwi lo dice una vez al arrancar y sigue
-sin red.
+Two rules keep it out of noise territory: only problems **in the files that were just
+edited** are reported, and **what was already said is not repeated**. A diagnostics
+channel that shouts on every edit ends up ignored entirely.
 
-Esto importa sobre todo en **work mode**, que aplica ediciones y comandos sin
-preguntar: es la marcha atrás que sustituye a la confirmación que ya no hay.
+If a **language server** is installed and the project is in that language — `gopls`,
+`typescript-language-server`, `pyright`, `rust-analyzer` — kiwi also registers the `lsp`
+tool with three operations: `definition`, `references` and `diagnostics`. The server
+starts the first time it is asked, not when kiwi opens, because indexing a whole module
+is expensive and most sessions do not need it.
 
-## Diagnósticos y LSP
-
-Después de cada `write_file`, `edit_file` o `multi_edit`, kiwi pasa **el
-verificador del propio proyecto** por el paquete tocado —`go vet` con `go.mod`,
-`tsc --noEmit` con `tsconfig.json`, `ruff` con `pyproject.toml`— y añade lo que
-encuentre a la misma observación que lee el modelo. Así se entera de que ha roto
-la compilación ahí mismo, no tres llamadas después, cuando ya ha construido
-encima. Se puede sustituir con `KIWI_DIAGNOSTICS_CMD` (un `{}` en el comando
-marca dónde va la ruta; si no lo hay, se añade al final).
-
-Dos reglas lo mantienen fuera del terreno del ruido: solo se reportan problemas
-**en los ficheros que se acaban de editar**, y **no se repite lo ya dicho**. Un
-canal de diagnósticos que grita en cada edición se acaba ignorando entero.
-
-Si hay un **language server** instalado y el proyecto es de ese lenguaje —`gopls`,
-`typescript-language-server`, `pyright`, `rust-analyzer`—, kiwi registra además la
-tool `lsp` con tres operaciones: `definition`, `references` y `diagnostics`. El
-servidor arranca la primera vez que se pregunta, no al abrir kiwi, porque indexar
-un módulo entero es caro y la mayoría de las sesiones no lo necesitan.
-
-Justifica su sitio en la única pregunta que `grep` no puede responder con
-honestidad: **cuál de estas coincidencias es el mismo símbolo**. `grep` encuentra
-un nombre; el servidor lo resuelve. Se configura con `KIWI_LSP`
-(`.go=gopls;.rb=solargraph --stdio`), y si no hay servidor la tool no se registra
-—una herramienta que el modelo ve pero que solo puede fallar es peor que ninguna.
+It earns its place on the one question `grep` cannot answer honestly: **which of these
+matches is the same symbol**. `grep` finds a name; the server resolves it. Configure it
+with `KIWI_LSP` (`.go=gopls;.rb=solargraph --stdio`), and if there is no server the tool
+is not registered — a tool the model sees but that can only fail is worse than none.
 
 ## Skills
 
-kiwi trae **siete skills instaladas de fábrica**, embebidas en el binario y
-sembradas en `~/.config/kiwi/skills/` la primera vez que arranca — sin eso, un
-`go install` recién hecho dejaría el directorio vacío y "prefabricadas" no
-querría decir nada.
+kiwi ships **seven built-in skills**, embedded in the binary and seeded into
+`~/.config/kiwi/skills/` the first time it starts — without that, a fresh `go install`
+would leave the directory empty and "built-in" would mean nothing.
 
-| Skill | Para qué |
+| Skill | What for |
 | --- | --- |
-| `plan` | escribe un `PLAN-*.md`: contexto, decisiones con su porqué, partes ancladas a `fichero.go:línea`, orden y verificación |
-| `commit` | mensaje desde el diff staged, comprobando primero **en qué repositorio estás** |
-| `code-review` | revisa el cambio: primero corrección, luego reutilización y simplificación |
-| `init` | escribe `KIWI.md` leyendo el proyecto antes |
-| `security-review` | inyección, secretos, autorización, SSRF, travesía de rutas, defaults inseguros |
-| `test` | encuentra los comandos reales de *este* repo, los corre y lee los fallos |
-| `reach` | investiga en internet: búsqueda, webs con JS, YouTube (`yt-dlp`), GitHub (`gh`), RSS, Reddit |
+| `plan` | writes a `PLAN-*.md`: context, decisions with their reasoning, parts anchored to `file.go:line`, order and verification |
+| `commit` | a message from the staged diff, checking first **which repository you are in** |
+| `code-review` | reviews the change: correctness first, then reuse and simplification |
+| `init` | writes `KIWI.md` after reading the project |
+| `security-review` | injection, secrets, authorization, SSRF, path traversal, insecure defaults |
+| `test` | finds *this* repo's real commands, runs them and reads the failures |
+| `reach` | researches on the internet: search, JS sites, YouTube (`yt-dlp`), GitHub (`gh`), RSS, Reddit |
 
-### Llegar a internet
+### Reaching the internet
 
-La skill `reach` y `kiwi doctor` están inspirados en
-[Agent Reach](https://github.com/Panniantong/agent-reach): el agente usa
-herramientas de línea de comandos normales para cada plataforma, y `kiwi doctor`
-(o `/doctor` dentro de la TUI) dice cuáles funcionan en tu máquina y cómo activar
-las que faltan. Solo mira; no instala nada.
+The `reach` skill and `kiwi doctor` are inspired by
+[Agent Reach](https://github.com/Panniantong/agent-reach): the agent uses ordinary
+command-line tools for each platform, and `kiwi doctor` (or `/doctor` inside the TUI)
+tells you which ones work on your machine and how to enable the missing ones. It only
+looks; it installs nothing.
 
 ```text
 $ kiwi doctor
@@ -461,47 +442,57 @@ $ kiwi doctor
 …
 ```
 
-**Nunca se pisa lo que hayas tocado.** Una skill solo se refresca si lo que hay
-en disco es byte a byte la versión que kiwi escribió por última vez, que es
-justo el caso en el que no se puede perder nada. Y si borras una, no vuelve:
-borrarla también es una decisión.
+**What you have touched is never overwritten.** A skill is only refreshed if what is on
+disk is byte for byte the version kiwi last wrote, which is exactly the case where
+nothing can be lost. And if you delete one, it does not come back: deleting it is a
+decision too.
 
-### Skills como comandos
+### Skills as commands
 
-Una skill con `user-invocable: true` en su frontmatter **se convierte en un slash
-command**: aparece en el autocompletado y en `/help`, y `/plan lo que sea` lanza
-un turno con sus instrucciones y con tu texto añadido. Los comandos nativos de
-kiwi siempre ganan — una skill llamada `clear` no puede secuestrar `/clear`.
+A skill with `user-invocable: true` in its frontmatter **becomes a slash command**: it
+shows up in autocomplete and in `/help`, and `/plan whatever` starts a turn with its
+instructions and your text appended. kiwi's native commands always win — a skill called
+`clear` cannot hijack `/clear`.
 
-## Teclado
+## Keyboard
 
-| Tecla | Qué hace |
+| Key | What it does |
 | --- | --- |
-| `↑` `↓` | recupera un prompt anterior (con el input vacío o a medias; un borrador multilínea se queda sus flechas) |
-| `ctrl+r` | busca entre los prompts anteriores |
-| `@` | selector difuso de ficheros — `@tumod` encuentra `internal/tui/model.go` |
-| `!comando` | ejecuta en la shell sin gastar un turno |
-| arrastrar con el ratón | selecciona texto de la conversación y lo copia al portapapeles al soltar |
-| `ctrl+t` | muestra u oculta la lista de tareas del modelo |
-| `ctrl+e` | redacta el prompt en `$EDITOR` |
-| `?` | panel de atajos, con el input vacío |
-| `shift+tab` | cicla de modo |
-| `esc` | descarta la cola, o cancela el turno |
+| `↑` `↓` | recalls an earlier prompt (with the input empty or half-typed; a multi-line draft keeps its arrows) |
+| `ctrl+r` | searches earlier prompts |
+| `@` | fuzzy file picker — `@tumod` finds `internal/tui/model.go` |
+| `!command` | runs in the shell without spending a turn |
+| mouse drag | selects conversation text and copies it to the clipboard on release |
+| `ctrl+t` | shows or hides the model's task list |
+| `ctrl+e` | writes the prompt in `$EDITOR` |
+| `?` | shortcuts panel, with the input empty |
+| `shift+tab` | cycles the mode |
+| `esc` | drops the queue, or cancels the turn |
 
-El **historial es por directorio de trabajo** (`~/.local/share/kiwi/history/`):
-los prompts de un proyecto son ruido en otro.
+**History is per working directory** (`~/.local/share/kiwi/history/`): one project's
+prompts are noise in another.
 
-**Escribir durante un turno encola** en vez de perderse. Todo lo encolado se
-manda junto al terminar, como un solo mensaje: tres cosas que se te ocurren
-viendo el mismo trabajo son una sola pieza de feedback, no tres turnos. `esc` la
-descarta. Si el turno falla, la cola **no** se envía —estaba escrita sobre un
-trabajo que no llegó a pasar, y esa decisión es tuya.
+**Typing during a turn queues** instead of getting lost. Everything queued is sent
+together when the turn ends, as a single message: three things that occur to you while
+watching the same work are one piece of feedback, not three turns. `esc` drops it. If
+the turn fails, the queue is **not** sent — it was written about work that never
+happened, and that decision is yours.
 
-Al acabar un turno de más de 20 segundos **suena la campana del terminal**. Con
-work mode desatendido eso deja de ser adorno: es cómo sabes que puedes volver.
-`KIWI_NOTIFY=desktop` añade notificación de escritorio; `KIWI_NOTIFY=off` calla
-del todo.
+When a turn longer than 20 seconds finishes, **the terminal bell rings**. With
+unattended work mode that stops being decoration: it is how you know you can come back.
+`KIWI_NOTIFY=desktop` adds a desktop notification; `KIWI_NOTIFY=off` silences it
+entirely.
 
-`!` respeta el modo: en plan mode un comando que escriba se rechaza, igual que
-haría la tool. Un modo de solo lectura del que te puedas escapar tecleando `!`
-no es una promesa que merezca la pena hacer.
+`!` respects the mode: in plan mode a command that writes is rejected, just as the tool
+would do. A read-only mode you can escape by typing `!` is not a promise worth making.
+
+## Development
+
+```sh
+make test               # go vet + go test, same as CI
+make dev                # installs ~/go/bin/kiwi-dev (isolated data, DEV badge in the TUI)
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

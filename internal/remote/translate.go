@@ -45,15 +45,15 @@ const openRouterBase = "https://openrouter.ai/api/v1"
 
 // The model is told who it is helping, so it hears "Kiwi" and "commit"
 // rather than "Kigo" and "con Miti".
-const translatorContext = "Te envían este fichero a Kiwi, un asistente de programación, por Telegram. " +
-	"Tu respuesta la leerá otro modelo que no puede ver el fichero: sé fiel y no inventes. " +
-	"Responde en el idioma del contenido y sin preámbulos.\n\n"
+const translatorContext = "This file was sent to Kiwi, a coding assistant, over Telegram. " +
+	"Your answer will be read by another model that cannot see the file: be faithful and do not make things up. " +
+	"Answer in the language of the content, with no preamble.\n\n"
 
 var translatorPrompts = map[mediaClass]string{
-	classImage: "Describe la imagen con detalle. Si contiene texto (código, errores, una captura), transcríbelo literalmente.",
-	classAudio: "Transcribe literalmente lo que se dice. Si no se entiende algo, márcalo con [inaudible]. Puede haber términos técnicos (commit, PR, tests, deploy).",
-	classVideo: "Responde con dos apartados.\nTranscripción: lo que se dice, literal (o «sin voz»). Puede haber términos técnicos (commit, PR, tests, deploy).\nImagen: qué se ve, en pocas frases; transcribe el texto que aparezca en pantalla.",
-	classPDF:   "Resume el documento y copia literalmente los datos importantes (cifras, fechas, nombres, código).",
+	classImage: "Describe the image in detail. If it contains text (code, errors, a screenshot), transcribe it verbatim.",
+	classAudio: "Transcribe verbatim what is said. Mark anything you cannot make out with [inaudible]. There may be technical terms (commit, PR, tests, deploy).",
+	classVideo: "Answer in two parts.\nTranscript: what is said, verbatim (or \"no speech\"). There may be technical terms (commit, PR, tests, deploy).\nPicture: what is shown, in a few sentences; transcribe any text that appears on screen.",
+	classPDF:   "Summarize the document and copy the important data verbatim (figures, dates, names, code).",
 }
 
 // translatable reports whether the translator can read m. Text documents are

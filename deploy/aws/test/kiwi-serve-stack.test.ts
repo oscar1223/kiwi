@@ -10,8 +10,8 @@ import { AwsSolutionsChecks } from "cdk-nag";
 
 import { KiwiServeStack } from "../lib/kiwi-serve-stack";
 
-// La AMI se busca con un lookup (cachedInContext). Dándole la respuesta aquí,
-// el test no necesita credenciales y no sale el aviso del valor de relleno.
+// The AMI comes from a lookup (cachedInContext). Giving the answer here means
+// the test needs no credentials and the placeholder warning does not show.
 const context = {
   "ssm:account=123456789012:parameterName=/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64:region=eu-west-1":
     "ami-0123456789abcdef0",
@@ -31,7 +31,7 @@ function synth(repo = "oscar1223/kiwi", availabilityZone?: string) {
 
 const { template } = synth();
 
-test("el security group no tiene ninguna regla de entrada", () => {
+test("the security group has no inbound rules", () => {
   for (const [, sg] of Object.entries(template.findResources("AWS::EC2::SecurityGroup"))) {
     assert.equal(sg.Properties.SecurityGroupIngress, undefined);
   }
@@ -44,7 +44,7 @@ test("solo sale HTTPS", () => {
   });
 });
 
-test("sin SSH: ni par de claves ni NAT", () => {
+test("no SSH: no key pair and no NAT", () => {
   template.hasResourceProperties("AWS::EC2::Instance", { KeyName: Match.absent() });
   template.resourceCountIs("AWS::EC2::NatGateway", 0);
 });
@@ -55,7 +55,7 @@ test("IMDSv2 obligatorio", () => {
   });
 });
 
-test("la AMI sale del contexto, no de un parámetro que cambie en cada deploy", () => {
+test("the AMI comes from context, not from a parameter that changes on every deploy", () => {
   template.hasResourceProperties("AWS::EC2::Instance", { ImageId: "ami-0123456789abcdef0" });
 });
 
@@ -66,14 +66,14 @@ test("disco gp3 cifrado", () => {
   });
 });
 
-test("el rol solo lee su propio secreto", () => {
+test("the role only reads its own secret", () => {
   const secretId = Object.keys(template.findResources("AWS::SecretsManager::Secret"))[0];
   const policies = template.findResources("AWS::IAM::Policy");
   const statements = Object.values(policies).flatMap((p) => p.Properties.PolicyDocument.Statement);
   const secretStatements = statements.filter((s) =>
     [s.Action].flat().some((a: string) => a.startsWith("secretsmanager:")),
   );
-  assert.ok(secretStatements.length > 0, "el rol debería poder leer el secreto");
+  assert.ok(secretStatements.length > 0, "the role should be able to read the secret");
   for (const s of secretStatements) {
     assert.deepEqual(s.Resource, { Ref: secretId }, "solo sobre este secreto, nunca sobre *");
     for (const a of [s.Action].flat()) {
@@ -90,7 +90,7 @@ test("Session Manager disponible", () => {
   });
 });
 
-test("el user data instala kiwi como servicio y clona el repo configurado", () => {
+test("the user data installs kiwi as a service and clones the configured repo", () => {
   const rendered = renderUserData(template);
   const userData = [rendered, embeddedFile(rendered, "/etc/systemd/system/kiwi.service")].join("\n");
   for (const needle of [
@@ -99,42 +99,42 @@ test("el user data instala kiwi como servicio y clona el repo configurado", () =
     "KIWI_REPO=oscar1223/kiwi",
     "KIWI_WORKDIR=/home/kiwi/work/kiwi",
     "ExecStartPre=+/usr/local/bin/kiwi-prepare",
-    // Sin -H, sudo puede dejar HOME en /root e instalar kiwi donde el
-    // servicio no lo busca.
+    // Without -H, sudo may leave HOME at /root and install kiwi where the
+    // service does not look for it.
     "sudo -H -u kiwi",
   ]) {
-    assert.ok(userData.includes(needle), `falta en el user data: ${needle}`);
+    assert.ok(userData.includes(needle), `missing from the user data: ${needle}`);
   }
 });
 
-// El user data es un Fn::Join de texto y tokens (el ARN del secreto).
+// The user data is an Fn::Join of text and tokens (the secret ARN).
 function renderUserData(t: Template): string {
   const instance = Object.values(t.findResources("AWS::EC2::Instance"))[0];
   const parts: unknown[] = instance.Properties.UserData["Fn::Base64"]["Fn::Join"][1];
   return parts.map((p) => (typeof p === "string" ? p : "arn:aws:secretsmanager:eu-west-1:123456789012:secret:Env")).join("");
 }
 
-// Contenido del fichero que el user data escribe en dest (va en base64).
+// Contents of the file the user data writes to dest (base64-encoded).
 function embeddedFile(userData: string, dest: string): string {
   const escaped = dest.replace(/[/.]/g, "\\$&");
   const m = userData.match(new RegExp(`base64 -d > ${escaped} <<'EOF'\\n([A-Za-z0-9+/=\\n]*?)\\nEOF\\n`));
-  assert.ok(m, `el user data debería escribir ${dest}`);
+  assert.ok(m, `the user data should write ${dest}`);
   return Buffer.from(m[1].replace(/\n/g, ""), "base64").toString("utf8");
 }
 
-test("el user data y los scripts que escribe son bash válido", () => {
+test("the user data and the scripts it writes are valid bash", () => {
   const userData = renderUserData(template);
-  // Un error de sintaxis solo se vería al arrancar la instancia.
+  // A syntax error would only show up when the instance boots.
   execFileSync("bash", ["-n"], { input: userData });
   execFileSync("bash", ["-n"], { input: embeddedFile(userData, "/usr/local/bin/kiwi-prepare") });
   assert.match(embeddedFile(userData, "/etc/systemd/system/kiwi.service"), /^\[Unit\]/);
 });
 
-test("el user data es ASCII y los ficheros llegan intactos", () => {
-  // CloudFormation cambia por "?" lo que no es ASCII: un acento en el user
-  // data rompe el fichero y hace que cada diff vea un cambio en la instancia.
+test("the user data is ASCII and the files arrive intact", () => {
+  // CloudFormation replaces non-ASCII with "?": an accent in the user data
+  // breaks the file and makes every diff see a change to the instance.
   const userData = renderUserData(template);
-  assert.ok(/^[\x00-\x7f]*$/.test(userData), "el user data tiene caracteres no ASCII");
+  assert.ok(/^[\x00-\x7f]*$/.test(userData), "the user data has non-ASCII characters");
   for (const [name, dest] of [
     ["kiwi-prepare.sh", "/usr/local/bin/kiwi-prepare"],
     ["kiwi.service", "/etc/systemd/system/kiwi.service"],
@@ -144,13 +144,13 @@ test("el user data es ASCII y los ficheros llegan intactos", () => {
   }
 });
 
-test("sin repo, trabaja en un directorio vacío", () => {
+test("with no repo, it works in an empty directory", () => {
   const { template } = synth("");
   const userData = JSON.stringify(Object.values(template.findResources("AWS::EC2::Instance"))[0].Properties.UserData);
   assert.ok(userData.includes("KIWI_WORKDIR=/home/kiwi/work\\n"));
 });
 
-test("cdk-nag (AwsSolutions) pasa, con cada excepción justificada", () => {
+test("cdk-nag (AwsSolutions) passes, with every exception justified", () => {
   const app = new App({ context });
   new KiwiServeStack(app, "Nag", {
     env: { account: "123456789012", region: "eu-west-1" },
@@ -159,11 +159,11 @@ test("cdk-nag (AwsSolutions) pasa, con cada excepción justificada", () => {
     instanceType: "t4g.small",
   });
   Validations.of(app).addPlugins(new AwsSolutionsChecks(app));
-  // Un hallazgo sin acknowledge hace fallar el synth.
+  // A finding without an acknowledge makes synth fail.
   assert.doesNotThrow(() => app.synth());
 });
 
-test("kiwi:az fija la zona de la subred", () => {
+test("kiwi:az pins the subnet's zone", () => {
   synth().template.hasResourceProperties("AWS::EC2::Subnet", { AvailabilityZone: "dummy1a" });
   const { template } = synth("oscar1223/kiwi", "eu-west-1b");
   template.resourceCountIs("AWS::EC2::Subnet", 1);

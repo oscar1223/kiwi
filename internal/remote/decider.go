@@ -85,8 +85,8 @@ func (a *Approver) Decide(ctx context.Context, req *permission.Request) (bool, e
 
 	question := renderQuestion(req)
 	msgID, err := conv.Send(ctx, question, []Button{
-		{Text: "✅ Permitir", Data: callbackData(id, true)},
-		{Text: "🚫 Denegar", Data: callbackData(id, false)},
+		{Text: "✅ Allow", Data: callbackData(id, true)},
+		{Text: "🚫 Deny", Data: callbackData(id, false)},
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -108,13 +108,13 @@ func (a *Approver) Decide(ctx context.Context, req *permission.Request) (bool, e
 	var outcome string
 	switch {
 	case err == nil && allow:
-		outcome = "✅ Permitido"
+		outcome = "✅ Allowed"
 	case err == nil:
-		outcome = "🚫 Denegado"
+		outcome = "🚫 Denied"
 	case ctx.Err() != nil:
-		outcome = "✗ Turno interrumpido"
+		outcome = "✗ Turn interrupted"
 	default:
-		outcome = fmt.Sprintf("⌛ Sin respuesta en %s: denegado", timeout.Round(time.Second))
+		outcome = fmt.Sprintf("⌛ No answer in %s: denied", timeout.Round(time.Second))
 		err = ErrApprovalTimeout
 	}
 	editCtx := ctx
@@ -146,14 +146,14 @@ func (a *Approver) HandleCallback(_ context.Context, q CallbackQuery) string {
 	req := a.pending[id]
 	a.mu.Unlock()
 	if req == nil {
-		return "Esta pregunta ya no está pendiente."
+		return "This question is no longer pending."
 	}
 	if allow {
 		req.Allow()
-		return "Permitido"
+		return "Allowed"
 	}
 	req.Deny()
-	return "Denegado"
+	return "Denied"
 }
 
 func renderQuestion(req *permission.Request) string {
@@ -161,11 +161,11 @@ func renderQuestion(req *permission.Request) string {
 	if req.Dangerous {
 		b.WriteString("⚠️ ")
 	}
-	fmt.Fprintf(&b, "Kiwi pide permiso (%s):\n\n%s", req.Name, req.Detail)
+	fmt.Fprintf(&b, "Kiwi asks for permission (%s):\n\n%s", req.Name, req.Detail)
 	if diff := strings.TrimSpace(req.Diff); diff != "" {
 		r := []rune(diff)
 		if len(r) > maxDiff {
-			diff = string(r[:maxDiff]) + "\n… (diff recortado)"
+			diff = string(r[:maxDiff]) + "\n… (diff truncated)"
 		}
 		b.WriteString("\n\n")
 		b.WriteString(diff)

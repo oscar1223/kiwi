@@ -6,7 +6,7 @@
 # local config
 .env
 
-# notas de planificación locales
+# local planning notes
 /PLAN-*.md
 
 # terminal-bench adapter build artifacts

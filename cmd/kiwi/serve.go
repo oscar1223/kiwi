@@ -209,7 +209,7 @@ func newServeScheduler(rs *serveSession, bot *remote.Bot, allowed []int64, loc *
 			return
 		}
 		conv := bot.Conversation(j.ChatID)
-		if _, err := conv.Send(ctx, fmt.Sprintf("⏰ Tarea #%d: %s", j.ID, truncate(j.Prompt, 300))); err != nil {
+		if _, err := conv.Send(ctx, fmt.Sprintf("⏰ Task #%d: %s", j.ID, truncate(j.Prompt, 300))); err != nil {
 			logf(fmt.Sprintf("cron: job #%d: %v", j.ID, err))
 		}
 		bot.Reply(ctx, j.ChatID, rs.RunScheduled(ctx, j.Prompt, conv))

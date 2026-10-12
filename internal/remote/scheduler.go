@@ -174,15 +174,15 @@ func (sc *Scheduler) fire(ctx context.Context, j Job) {
 	}()
 }
 
-const cronUsage = `Tareas programadas:
+const cronUsage = `Scheduled tasks:
 
-/cron add "0 9 * * 1-5" revisa los PRs abiertos
-/cron add @daily resume los commits de ayer
+/cron add "0 9 * * 1-5" review the open PRs
+/cron add @daily summarize yesterday's commits
 /cron list
 /cron pause 3 · /cron resume 3 · /cron rm 3
-/cron run 3   (ejecutarla ya)
+/cron run 3   (run it now)
 
-Formato: minuto hora día mes día-de-la-semana (0 o 7 = domingo), o @hourly, @daily, @weekly, @monthly.`
+Format: minute hour day month day-of-week (0 or 7 = Sunday), or @hourly, @daily, @weekly, @monthly.`
 
 // Command answers "/cron <args>" from chatID.
 func (sc *Scheduler) Command(ctx context.Context, chatID int64, args string) string {
@@ -199,11 +199,11 @@ func (sc *Scheduler) Command(ctx context.Context, chatID int64, args string) str
 	case "pause", "resume", "rm", "run":
 		id, err := strconv.ParseInt(strings.TrimPrefix(rest, "#"), 10, 64)
 		if err != nil {
-			return fmt.Sprintf("Falta el número de la tarea: /cron %s 3", sub)
+			return fmt.Sprintf("Missing the task number: /cron %s 3", sub)
 		}
 		return sc.act(ctx, chatID, strings.ToLower(sub), id)
 	default:
-		return "No conozco «" + sub + "».\n\n" + cronUsage
+		return "I don't know \"" + sub + "\".\n\n" + cronUsage
 	}
 }
 
@@ -214,19 +214,19 @@ func (sc *Scheduler) add(ctx context.Context, chatID int64, rest string) string 
 	}
 	sched, err := ParseSchedule(spec)
 	if err != nil {
-		return "Expresión no válida: " + err.Error()
+		return "Invalid expression: " + err.Error()
 	}
 	first := sched.Next(sc.now())
 	if first.IsZero() {
-		return "«" + spec + "» no se cumpliría nunca (¿31 de febrero?)."
+		return "\"" + spec + "\" would never fire (February 31st?)."
 	}
 
 	j, err := sc.Store.Add(ctx, chatID, spec, prompt, sc.now())
 	if err != nil {
-		return "No he podido guardarla: " + err.Error()
+		return "Could not save it: " + err.Error()
 	}
 	sc.poke()
-	return fmt.Sprintf("Tarea #%d creada.\n%s · próxima: %s\n%s", j.ID, spec, formatWhen(first), prompt)
+	return fmt.Sprintf("Task #%d created.\n%s · next: %s\n%s", j.ID, spec, formatWhen(first), prompt)
 }
 
 // splitSpec separates the schedule from the prompt. The schedule is quoted,
@@ -236,7 +236,7 @@ func splitSpec(s string) (spec, prompt string, err error) {
 	case strings.HasPrefix(s, `"`):
 		end := strings.Index(s[1:], `"`)
 		if end < 0 {
-			return "", "", errors.New("Falta cerrar las comillas de la expresión.")
+			return "", "", errors.New("The expression's quotes are not closed.")
 		}
 		spec, prompt = s[1:end+1], s[end+2:]
 	case strings.HasPrefix(s, "@"):
@@ -244,7 +244,7 @@ func splitSpec(s string) (spec, prompt string, err error) {
 	default:
 		f := strings.Fields(s)
 		if len(f) < 6 {
-			return "", "", errors.New("Faltan la expresión o la tarea.")
+			return "", "", errors.New("The expression or the task is missing.")
 		}
 		spec = strings.Join(f[:5], " ")
 		// The prompt keeps its own spacing: skip past the fifth field.
@@ -258,7 +258,7 @@ func splitSpec(s string) (spec, prompt string, err error) {
 	}
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return "", "", errors.New("Falta la tarea después de la expresión.")
+		return "", "", errors.New("The task is missing after the expression.")
 	}
 	return strings.TrimSpace(spec), prompt, nil
 }
@@ -266,10 +266,10 @@ func splitSpec(s string) (spec, prompt string, err error) {
 func (sc *Scheduler) list(ctx context.Context, chatID int64) string {
 	jobs, err := sc.Store.List(ctx, chatID)
 	if err != nil {
-		return "No he podido leer las tareas: " + err.Error()
+		return "Could not read the tasks: " + err.Error()
 	}
 	if len(jobs) == 0 {
-		return "No hay tareas programadas.\n\n" + cronUsage
+		return "No scheduled tasks.\n\n" + cronUsage
 	}
 	now := sc.now()
 	var b strings.Builder
@@ -277,9 +277,9 @@ func (sc *Scheduler) list(ctx context.Context, chatID int64) string {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		state := "próxima: "
+		state := "next: "
 		if j.Paused {
-			state = "⏸ en pausa"
+			state = "⏸ paused"
 		} else if sched, err := ParseSchedule(j.Spec); err == nil {
 			state += formatWhen(sched.Next(now))
 		}
@@ -303,31 +303,31 @@ func (sc *Scheduler) act(ctx context.Context, chatID int64, verb string, id int6
 			// Detached from this message's context: the run outlives the
 			// command that started it, and stops with the scheduler's.
 			sc.fire(context.WithoutCancel(ctx), j)
-			return fmt.Sprintf("Ejecutando la tarea #%d.", id)
+			return fmt.Sprintf("Running task #%d.", id)
 		}
 	}
 	if errors.Is(err, ErrJobNotFound) {
-		return fmt.Sprintf("No hay ninguna tarea #%d.", id)
+		return fmt.Sprintf("There is no task #%d.", id)
 	}
 	if err != nil {
-		return "No he podido: " + err.Error()
+		return "Could not do it: " + err.Error()
 	}
 	sc.poke()
 	done := map[string]string{
-		"pause":  "Tarea #%d en pausa.",
-		"resume": "Tarea #%d reanudada.",
-		"rm":     "Tarea #%d borrada.",
+		"pause":  "Task #%d paused.",
+		"resume": "Task #%d resumed.",
+		"rm":     "Task #%d deleted.",
 	}
 	return fmt.Sprintf(done[verb], id)
 }
 
-var weekdaysES = [...]string{"dom", "lun", "mar", "mié", "jue", "vie", "sáb"}
-var monthsES = [...]string{"", "ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"}
+var weekdays = [...]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
+var months = [...]string{"", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
 
-// formatWhen is a short Spanish date: "lun 12 oct 09:00".
+// formatWhen is a short date: "Mon 12 Oct 09:00".
 func formatWhen(t time.Time) string {
 	if t.IsZero() {
-		return "nunca"
+		return "never"
 	}
-	return fmt.Sprintf("%s %d %s %s", weekdaysES[t.Weekday()], t.Day(), monthsES[t.Month()], t.Format("15:04"))
+	return fmt.Sprintf("%s %d %s %s", weekdays[t.Weekday()], t.Day(), months[t.Month()], t.Format("15:04"))
 }

@@ -1,5 +1,5 @@
 [Unit]
-Description=Kiwi como bot de Telegram (kiwi serve)
+Description=Kiwi as a Telegram bot (kiwi serve)
 Wants=network-online.target
 After=network-online.target
 
@@ -8,15 +8,15 @@ User=kiwi
 Group=kiwi
 WorkingDirectory=/home/kiwi
 EnvironmentFile=/etc/kiwi/serve.conf
-# "+" la ejecuta como root: lee el secreto y se lo pasa a kiwi en su .env.
+# "+" runs it as root: it reads the secret and hands it to kiwi in its .env.
 ExecStartPre=+/usr/local/bin/kiwi-prepare
 ExecStart=/home/kiwi/.local/bin/kiwi serve --cwd ${KIWI_WORKDIR}
 Restart=always
 RestartSec=10
-# SIGTERM cancela el turno en curso; se le da tiempo a guardar.
+# SIGTERM cancels the running turn; give it time to save.
 TimeoutStopSec=30
 
-# kiwi y lo que lance el agente no pueden ganar privilegios ni tocar el sistema.
+# kiwi and whatever the agent launches cannot gain privileges or touch the system.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
