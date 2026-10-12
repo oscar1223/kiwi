@@ -48,7 +48,7 @@ release:
   draft: false
   prerelease: auto
 
-# Homebrew: tap propio, sin pasar por homebrew-core.
+# Homebrew: our own tap, without going through homebrew-core.
 homebrew_casks:
   - name: kiwi
     binaries: [kiwi]

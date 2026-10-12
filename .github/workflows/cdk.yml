@@ -24,5 +24,5 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
-      # Sin credenciales: la AMI va en el contexto de los tests.
+      # No credentials: the AMI is in the test context.
       - run: npm test
