@@ -1,10 +1,10 @@
-## Resumen
+## Summary
 
-<!-- Qué cambia y por qué. -->
+<!-- What changes and why. -->
 
 Closes #
 
-## Cómo se ha probado
+## How it was tested
 
 - [ ] `make test`
-- [ ] Probado a mano con `kiwi-dev` (`make dev`)
+- [ ] Tested by hand with `kiwi-dev` (`make dev`)

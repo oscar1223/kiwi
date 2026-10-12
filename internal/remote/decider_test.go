@@ -75,13 +75,13 @@ func TestApproveAllows(t *testing.T) {
 	if !strings.Contains(q.text, "rm -rf /tmp/kiwi-test") || !strings.HasPrefix(q.text, "⚠️") {
 		t.Errorf("question should show the command and flag it as dangerous:\n%s", q.text)
 	}
-	if notice := press(a, q, true); notice != "Permitido" {
+	if notice := press(a, q, true); notice != "Allowed" {
 		t.Errorf("notice = %q", notice)
 	}
 	if err := verdict(t, done); err != nil {
 		t.Fatalf("Ask = %v, want nil after Allow", err)
 	}
-	if e := lastEdit(conv); !strings.Contains(e, "✅ Permitido") {
+	if e := lastEdit(conv); !strings.Contains(e, "✅ Allowed") {
 		t.Errorf("the question should be edited to its outcome (which drops the buttons), got:\n%s", e)
 	}
 }
@@ -95,7 +95,7 @@ func TestApproveDenies(t *testing.T) {
 	if err := verdict(t, done); !errors.Is(err, permission.ErrDenied) {
 		t.Fatalf("Ask = %v, want ErrDenied", err)
 	}
-	if e := lastEdit(conv); !strings.Contains(e, "🚫 Denegado") {
+	if e := lastEdit(conv); !strings.Contains(e, "🚫 Denied") {
 		t.Errorf("final message:\n%s", e)
 	}
 }
@@ -108,11 +108,11 @@ func TestApprovalTimesOut(t *testing.T) {
 	if err := verdict(t, done); !errors.Is(err, ErrApprovalTimeout) {
 		t.Fatalf("Ask = %v, want ErrApprovalTimeout", err)
 	}
-	if e := lastEdit(conv); !strings.Contains(e, "Sin respuesta") || !strings.Contains(e, "denegado") {
+	if e := lastEdit(conv); !strings.Contains(e, "No answer") || !strings.Contains(e, "denied") {
 		t.Errorf("final message:\n%s", e)
 	}
 	// A late press finds nothing to resolve.
-	if notice := press(a, question(t, conv), true); !strings.Contains(notice, "ya no está pendiente") {
+	if notice := press(a, question(t, conv), true); !strings.Contains(notice, "no longer pending") {
 		t.Errorf("a press after the timeout returned %q", notice)
 	}
 }
@@ -128,7 +128,7 @@ func TestApprovalCancelledWithTheTurn(t *testing.T) {
 	if err := verdict(t, done); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Ask = %v, want context.Canceled", err)
 	}
-	if e := lastEdit(conv); !strings.Contains(e, "interrumpido") {
+	if e := lastEdit(conv); !strings.Contains(e, "interrupted") {
 		t.Errorf("the question should be closed even on shutdown:\n%s", e)
 	}
 }
@@ -190,7 +190,7 @@ func TestDiffIsShownTrimmed(t *testing.T) {
 	go func() { done <- broker.Ask(context.Background(), action) }()
 
 	q := question(t, conv)
-	if !strings.Contains(q.text, "+línea") || !strings.Contains(q.text, "diff recortado") {
+	if !strings.Contains(q.text, "+línea") || !strings.Contains(q.text, "diff truncated") {
 		t.Errorf("want the diff, trimmed:\n%.200s…", q.text)
 	}
 	if n := utf16Len(q.text); n > maxMessage {

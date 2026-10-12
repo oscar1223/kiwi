@@ -95,7 +95,7 @@ func TestNewStartsOver(t *testing.T) {
 		llmtest.Step{Text: "dos"},
 	)
 	s.Handle(context.Background(), msg("primero"), nil)
-	if reply := s.Handle(context.Background(), msg("/new"), nil); !strings.Contains(reply, "nueva") {
+	if reply := s.Handle(context.Background(), msg("/new"), nil); !strings.Contains(reply, "New conversation") {
 		t.Errorf("/new replied %q", reply)
 	}
 	s.Handle(context.Background(), msg("segundo"), nil)
@@ -199,14 +199,14 @@ func TestVoiceNoteIsTranscribedForTheModel(t *testing.T) {
 		t.Errorf("reply = %q", reply)
 	}
 	in := modelInput(t, fake)
-	for _, want := range []string{"nota de voz", "/inbox/v.ogg", "Transcripción", "Revisa el último commit."} {
+	for _, want := range []string{"voice note", "/inbox/v.ogg", "Transcript", "Revisa el último commit."} {
 		if !strings.Contains(in, want) {
 			t.Errorf("model input lacks %q:\n%s", want, in)
 		}
 	}
 	// The user sees what was heard, so a bad transcription is caught early.
 	ops := conv.snapshot()
-	if len(ops) < 2 || !strings.Contains(ops[0].text, "Escuchando") || !ops[1].edit || !strings.Contains(ops[1].text, "«Revisa el último commit.»") {
+	if len(ops) < 2 || !strings.Contains(ops[0].text, "Listening") || !ops[1].edit || !strings.Contains(ops[1].text, "\"Revisa el último commit.\"") {
 		t.Errorf("chat ops = %+v, want a notice edited into the transcription", ops)
 	}
 }
@@ -237,7 +237,7 @@ func TestTranslatorFailureStillRunsTheTurn(t *testing.T) {
 	if in := modelInput(t, fake); !strings.Contains(in, "Insufficient credits") || !strings.Contains(in, "/inbox/v.ogg") {
 		t.Errorf("model input should say why and where the file is:\n%s", in)
 	}
-	if ops := conv.snapshot(); len(ops) < 2 || !strings.Contains(ops[1].text, "No he podido escucharlo") {
+	if ops := conv.snapshot(); len(ops) < 2 || !strings.Contains(ops[1].text, "Could not hear it") {
 		t.Errorf("chat ops = %+v, want the notice to say it could not listen", ops)
 	}
 }

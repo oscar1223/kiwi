@@ -88,7 +88,7 @@ func TestLiveIsThrottled(t *testing.T) {
 	if max := int(elapsed/interval) + 2; len(ops) > max {
 		t.Errorf("%d updates in %s, want at most %d", len(ops), elapsed, max)
 	}
-	if !strings.Contains(ops[len(ops)-1].text, "300 pasos") {
+	if !strings.Contains(ops[len(ops)-1].text, "300 steps") {
 		t.Errorf("the final update should count every call:\n%s", ops[len(ops)-1].text)
 	}
 }
@@ -115,7 +115,7 @@ func TestLiveSendsOnceThenEdits(t *testing.T) {
 		}
 	}
 	final := ops[len(ops)-1].text
-	for _, want := range []string{"✓ Hecho", "2 pasos", "● read_file: go.mod", "● bash: make test"} {
+	for _, want := range []string{"✓ Done", "2 steps", "● read_file: go.mod", "● bash: make test"} {
 		if !strings.Contains(final, want) {
 			t.Errorf("final message lacks %q:\n%s", want, final)
 		}
@@ -143,7 +143,7 @@ func TestLiveMarksFailuresAndInterruptions(t *testing.T) {
 
 	ops := conv.snapshot()
 	final := ops[len(ops)-1].text
-	if !strings.Contains(final, "✗ bash: go build") || !strings.HasPrefix(final, "✗ Interrumpido") {
+	if !strings.Contains(final, "✗ bash: go build") || !strings.HasPrefix(final, "✗ Interrupted") {
 		t.Errorf("final message:\n%s", final)
 	}
 }
@@ -157,7 +157,7 @@ func TestLiveKeepsTheLastLines(t *testing.T) {
 	o.finish(context.Background(), true)
 
 	final := conv.snapshot()[len(conv.snapshot())-1].text
-	if !strings.Contains(final, "… y 8 antes") || strings.Contains(final, "f07.go") || !strings.Contains(final, "f19.go") {
+	if !strings.Contains(final, "… and 8 earlier") || strings.Contains(final, "f07.go") || !strings.Contains(final, "f19.go") {
 		t.Errorf("want the last %d calls and a count of the rest:\n%s", liveLines, final)
 	}
 	if n := utf16Len(final); n > maxMessage {
@@ -183,7 +183,7 @@ func TestSessionShowsLiveProgress(t *testing.T) {
 	if len(ops) == 0 {
 		t.Fatal("no progress message during a turn with tool calls")
 	}
-	if final := ops[len(ops)-1].text; !strings.Contains(final, "✓ Hecho") || !strings.Contains(final, "write_file: a.txt") {
+	if final := ops[len(ops)-1].text; !strings.Contains(final, "✓ Done") || !strings.Contains(final, "write_file: a.txt") {
 		t.Errorf("final progress message:\n%s", final)
 	}
 }

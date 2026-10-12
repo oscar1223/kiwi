@@ -60,7 +60,7 @@ func (s *Session) sem() chan struct{} {
 }
 
 // Busy is the reply to a message that arrives while a turn is running.
-const Busy = "Sigo con la tarea anterior. Te escribo cuando acabe; mándame esto después."
+const Busy = "Still working on the previous task. I'll write when it's done; send this again afterwards."
 
 // Handle is a Handler: it answers commands and runs everything else as a turn.
 // While a turn runs, conv shows its progress; conv may be nil.
@@ -73,7 +73,7 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 	// /cron only touches the job list, so it works mid-turn too.
 	if command(text) == "/cron" {
 		if s.Cron == nil {
-			return "Las tareas programadas no están activadas en este kiwi serve."
+			return "Scheduled tasks are not enabled in this kiwi serve."
 		}
 		_, args, _ := strings.Cut(text, " ")
 		return s.Cron.Command(ctx, msg.Chat.ID, args)
@@ -89,13 +89,13 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 	if msg.Attachment == nil {
 		switch command(text) {
 		case "/start", "/help":
-			return fmt.Sprintf("Kiwi trabajando en %s.\n\nEscríbeme una tarea: mientras trabajo, un mensaje va mostrando lo que hago, y al terminar te contesto. También entiendo fotos, notas de voz, audios, vídeos y documentos.\n/new empieza una conversación nueva.\n/cron programa tareas que se ejecutan solas.", s.WorkDir)
+			return fmt.Sprintf("Kiwi working in %s.\n\nSend me a task: while I work, a message shows what I'm doing, and I reply when I'm done. I also understand photos, voice notes, audio, video and documents.\n/new starts a new conversation.\n/cron schedules tasks that run on their own.", s.WorkDir)
 		case "/new":
 			if err := s.Reset(ctx); err != nil {
-				return "No he podido empezar una conversación nueva: " + err.Error()
+				return "Could not start a new conversation: " + err.Error()
 			}
 			s.History = nil
-			return "Conversación nueva. ¿Qué hacemos?"
+			return "New conversation. What are we doing?"
 		}
 	} else {
 		text = s.withAttachment(ctx, msg.Attachment, text, conv)
@@ -123,22 +123,22 @@ func (s *Session) Handle(ctx context.Context, msg Message, conv Conversation) st
 // conversation keeps the description and not the bytes.
 func (s *Session) withAttachment(ctx context.Context, m *Media, caption string, conv Conversation) string {
 	var b strings.Builder
-	where := "no se ha podido guardar"
+	where := "could not be saved"
 	if m.Path != "" {
-		where = "guardado en " + m.Path
+		where = "saved at " + m.Path
 	}
-	fmt.Fprintf(&b, "[Adjunto de Telegram: %s, %s]\n", strings.ToLower(m.label()), where)
+	fmt.Fprintf(&b, "[Telegram attachment: %s, %s]\n", strings.ToLower(m.label()), where)
 
 	switch {
 	case !translatable(m):
 		if m.class() == classText {
-			b.WriteString("[Es un documento de texto: léelo con read_file si hace falta.]\n")
+			b.WriteString("[It is a text document: read it with read_file if needed.]\n")
 		} else {
-			b.WriteString("[No sé leer este tipo de fichero; solo tienes la ruta.]\n")
+			b.WriteString("[I can't read this kind of file; you only have the path.]\n")
 		}
 	case m.Path == "":
 	case s.Translator == nil:
-		b.WriteString("[No se ha podido describir: no hay modelo para fotos, audio y vídeo (falta OPENROUTER_API_KEY).]\n")
+		b.WriteString("[Could not describe it: there is no model for photos, audio and video (OPENROUTER_API_KEY is missing).]\n")
 	default:
 		s.logf("%s %s: %s", m.emoji(), m.Kind, filepath.Base(m.Path))
 		var status int64
@@ -151,9 +151,9 @@ func (s *Session) withAttachment(ctx context.Context, m *Media, caption string, 
 				return ""
 			}
 			s.logf("could not translate %s: %v", m.Path, err)
-			fmt.Fprintf(&b, "[No se ha podido describir: %s]\n", err)
+			fmt.Fprintf(&b, "[Could not describe it: %s]\n", err)
 			if status != 0 {
-				conv.Edit(ctx, status, m.emoji()+" No he podido "+translatingVerb[m.class()]+"lo; sigo con lo que tengo.")
+				conv.Edit(ctx, status, m.emoji()+" Could not "+translatingVerb[m.class()]+" it; carrying on with what I have.")
 			}
 			break
 		}
@@ -163,7 +163,7 @@ func (s *Session) withAttachment(ctx context.Context, m *Media, caption string, 
 			// before the agent acts on it.
 			done := m.emoji() + " " + translatedNotice[m.class()]
 			if m.class() == classAudio {
-				done = m.emoji() + " «" + truncateRunes(text, 600) + "»"
+				done = m.emoji() + " \"" + truncateRunes(text, 600) + "\""
 			}
 			conv.Edit(ctx, status, done)
 		}
@@ -177,18 +177,18 @@ func (s *Session) withAttachment(ctx context.Context, m *Media, caption string, 
 
 var (
 	translatingNotice = map[mediaClass]string{
-		classImage: "Mirando la imagen…", classAudio: "Escuchando…",
-		classVideo: "Viendo el vídeo…", classPDF: "Leyendo el documento…",
+		classImage: "Looking at the image…", classAudio: "Listening…",
+		classVideo: "Watching the video…", classPDF: "Reading the document…",
 	}
 	translatingVerb = map[mediaClass]string{
-		classImage: "ver", classAudio: "escuchar", classVideo: "ver", classPDF: "leer",
+		classImage: "see", classAudio: "hear", classVideo: "watch", classPDF: "read",
 	}
 	translatedNotice = map[mediaClass]string{
-		classImage: "Imagen vista.", classVideo: "Vídeo visto.", classPDF: "Documento leído.",
+		classImage: "Image seen.", classVideo: "Video watched.", classPDF: "Document read.",
 	}
 	translationTitle = map[mediaClass]string{
-		classImage: "Descripción de la imagen", classAudio: "Transcripción",
-		classVideo: "Contenido del vídeo", classPDF: "Resumen del documento",
+		classImage: "Image description", classAudio: "Transcript",
+		classVideo: "Video content", classPDF: "Document summary",
 	}
 )
 
@@ -245,14 +245,14 @@ func (s *Session) turn(ctx context.Context, input string, conv Conversation, his
 		}
 		s.logf("turn failed: %v", err)
 		if errors.Is(err, agent.ErrMaxSteps) {
-			return "He llegado al límite de pasos sin terminar. Dime si sigo.", nil
+			return "I hit the step limit before finishing. Tell me if I should keep going.", nil
 		}
 		return "Error: " + err.Error(), nil
 	}
 	s.logf("turn done in %d step(s)", res.Steps)
 
 	if strings.TrimSpace(res.Text) == "" {
-		return "Hecho.", res.Messages
+		return "Done.", res.Messages
 	}
 	return res.Text, res.Messages
 }

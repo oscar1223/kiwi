@@ -1,94 +1,92 @@
-# kiwi serve en AWS
+# kiwi serve on AWS
 
-Un stack de CDK que deja `kiwi serve` corriendo en un EC2, disponible aunque tu
-portátil esté apagado.
+A CDK stack that leaves `kiwi serve` running on an EC2 instance, available even when
+your laptop is off.
 
 ```
-Telegram  <── long polling (HTTPS, sale la instancia) ──  EC2 t4g.small
-                                                           ├─ systemd: kiwi serve
-Secrets Manager ── token, IDs, API key, GH_TOKEN ───────>  ├─ ~/.config/kiwi/.env (0600)
-                                                           └─ ~/work/<repo>  ── PRs ──> GitHub
-Tú ── SSM Session Manager (sin SSH) ───────────────────>
+Telegram  <── long polling (HTTPS, outbound from the instance) ── EC2 t4g.small
+                                                                  ├─ systemd: kiwi serve
+Secrets Manager ── token, IDs, API key, GH_TOKEN ──────────────>  ├─ ~/.config/kiwi/.env (0600)
+                                                                  └─ ~/work/<repo>  ── PRs ──> GitHub
+You ── SSM Session Manager (no SSH) ───────────────────────────>
 ```
 
-- **Sin puertos de entrada.** El security group no tiene ninguna regla de entrada y
-  solo deja salir HTTPS. No hay SSH ni par de claves: se entra por Session Manager.
-- **Sin NAT Gateway.** La instancia va en una subred pública con IP pública. Como no
-  admite tráfico de entrada, la IP solo sirve para salir, y un NAT costaría más que la
-  propia instancia.
-- **Secretos fuera del disco del repo.** Viven en Secrets Manager. El rol de la
-  instancia solo puede leer ese secreto, y en cada arranque el servicio los vuelca al
-  `.env` de Kiwi con permisos 0600.
-- **Usuario `kiwi` sin sudo,** con un servicio `systemd` que se reinicia solo.
+- **No inbound ports.** The security group has no inbound rules and only lets
+  HTTPS out. There is no SSH and no key pair: you get in through Session Manager.
+- **No NAT Gateway.** The instance sits in a public subnet with a public IP. Since it
+  accepts no inbound traffic, the IP is only used to go out, and a NAT would cost more
+  than the instance itself.
+- **Secrets stay off the repo's disk.** They live in Secrets Manager. The instance role
+  can only read that secret, and on every start the service dumps it into Kiwi's
+  `.env` with mode 0600.
+- **A `kiwi` user without sudo,** with a `systemd` service that restarts itself.
 
-## Coste aproximado
+## Approximate cost
 
-Unos 15-20 $/mes, sin contar lo que gastes en el modelo:
+About $15-20/month, not counting what you spend on the model:
 
 - `t4g.small`
-- 20 GB de gp3
-- la IP pública (AWS la cobra aparte)
-- el secreto de Secrets Manager
+- 20 GB of gp3
+- the public IP (AWS bills it separately)
+- the Secrets Manager secret
 
-Las cifras exactas dependen de la región: compruébalas en la calculadora de AWS antes
-de desplegar.
+Exact figures depend on the region: check them in the AWS pricing calculator before
+deploying.
 
-## Antes de empezar
+## Before you start
 
-1. **Una release con `kiwi serve`.** La instancia instala la última release, y la v0.1.3
-   todavía no trae el comando.
-2. **Un bot de Telegram solo para el EC2.** Créalo con @BotFather. Telegram solo deja a
-   un proceso leer cada token: si tu `kiwi-dev serve` local usa el mismo bot, los dos
-   chocan con un `409 Conflict`.
-3. **Un token de GitHub de grano fino** (*fine-grained*), limitado al repo o repos en
-   los que vaya a trabajar. Permisos: *Contents* y *Pull requests* en lectura y
-   escritura. Nada más.
-4. **CDK con la cuenta inicializada** (`npx cdk bootstrap`), una sola vez por cuenta
-   y región.
+1. **A release with `kiwi serve`.** The instance installs the latest release, and v0.1.3
+   does not ship the command yet.
+2. **A Telegram bot just for the EC2 instance.** Create it with @BotFather. Telegram only
+   lets one process read each token: if your local `kiwi-dev serve` uses the same bot,
+   both collide with a `409 Conflict`.
+3. **A fine-grained GitHub token**, limited to the repo or repos it will work in.
+   Permissions: *Contents* and *Pull requests*, read and write. Nothing else.
+4. **CDK with the account bootstrapped** (`npx cdk bootstrap`), once per account and
+   region.
 
-## Desplegar
+## Deploy
 
 ```sh
 cd deploy/aws
 npm ci
-npm test               # tests de la plantilla, sin AWS
-npx cdk diff           # qué se va a crear
+npm test               # template tests, no AWS needed
+npx cdk diff           # what will be created
 npx cdk deploy
 ```
 
-El primer `synth` busca la AMI de Amazon Linux 2023 y la guarda en `cdk.context.json`.
-**No borres ese fichero.** Si lo pierdes, el siguiente deploy coge una AMI más nueva y
-**reemplaza la instancia**, y con ella se van las sesiones guardadas. Está en
-`.gitignore` porque la clave incluye el ID de tu cuenta y este repo es público.
+The first `synth` looks up the Amazon Linux 2023 AMI and stores it in `cdk.context.json`.
+**Do not delete that file.** If you lose it, the next deploy picks a newer AMI and
+**replaces the instance**, taking the saved sessions with it. It is in `.gitignore`
+because the key includes your account ID and this repo is public.
 
-Para cambiar el repo de trabajo, la versión o el tipo de instancia:
+To change the working repo, the version or the instance type:
 
 ```sh
-npx cdk deploy -c kiwi:repo=oscar1223/otro -c kiwi:version=v0.2.0
+npx cdk deploy -c kiwi:repo=oscar1223/other -c kiwi:version=v0.2.0
 ```
 
-El user data solo se ejecuta en el primer arranque, así que estos cambios solo se
-aplican en una instancia nueva.
+User data only runs on the first boot, so these changes only apply to a new instance.
 
-### Si una zona se queda sin capacidad
+### If a zone runs out of capacity
 
-Por defecto la instancia va en la primera zona de la región. Si el deploy falla con
-`We currently do not have sufficient t4g.small capacity in the Availability Zone`, elige
-otra de las que propone el mensaje. Guárdala en `cdk.context.json`, junto a la AMI, para
-no tener que pasarla en cada deploy:
+By default the instance goes in the region's first zone. If the deploy fails with
+`We currently do not have sufficient t4g.small capacity in the Availability Zone`, pick
+another one from those the message suggests. Store it in `cdk.context.json`, next to the
+AMI, so you do not have to pass it on every deploy:
 
 ```json
 "kiwi:az": "eu-north-1b"
 ```
 
-Un primer deploy fallido deja el stack en `ROLLBACK_COMPLETE`, sin recursos. El
-siguiente `cdk deploy` lo borra y lo crea de nuevo. **Cambiar la zona de un stack que ya
-funciona reemplaza la instancia**, igual que cambiar la AMI.
+A failed first deploy leaves the stack in `ROLLBACK_COMPLETE`, with no resources. The
+next `cdk deploy` deletes it and creates it again. **Changing the zone of a stack that
+already works replaces the instance**, just like changing the AMI.
 
-## Rellenar el secreto
+## Fill in the secret
 
-El deploy crea el secreto vacío; su ARN aparece en la salida `SecretArn`. Rellénalo
-desde un fichero, para que los valores no queden en el historial de la shell:
+The deploy creates the secret empty; its ARN shows up in the `SecretArn` output. Fill it
+from a file, so the values do not end up in your shell history:
 
 ```sh
 cat > /tmp/kiwi-secret.json <<'EOF'
@@ -103,36 +101,36 @@ aws secretsmanager put-secret-value --secret-id <SecretArn> --secret-string file
 rm /tmp/kiwi-secret.json
 ```
 
-- **Cualquier otra clave** que pongas en el secreto acaba también en el `.env`. Sirve,
-  por ejemplo, para la clave de otro proveedor de modelos, o para `KIWI_TZ` si tus
-  tareas de `/cron` no van en hora de Madrid (la instancia está en UTC).
-- **Mientras falten el token o la lista blanca,** el servicio falla al arrancar y
-  systemd lo reintenta cada 10 s. En cuanto los pones, arranca solo.
-- **Si cambias un valor más tarde,** basta con `sudo systemctl restart kiwi`.
+- **Any other key** you put in the secret also ends up in the `.env`. That works, for
+  example, for another model provider's key, or for `KIWI_TZ` if your `/cron` tasks
+  should not run on Madrid time (the instance is on UTC).
+- **While the token or the allowlist is missing,** the service fails to start and
+  systemd retries every 10 s. As soon as you set them, it starts on its own.
+- **If you change a value later,** `sudo systemctl restart kiwi` is enough.
 
-## Operar
+## Operate
 
 ```sh
-# entrar en la instancia
+# get into the instance
 aws ssm start-session --target <InstanceId>
 
-# dentro
+# inside
 sudo systemctl status kiwi
-sudo journalctl -u kiwi -f        # cada tool call y lo que se bloquea
+sudo journalctl -u kiwi -f        # every tool call and whatever gets blocked
 
-# actualizar kiwi a la última release (ruta completa: un ~ lo expandiría
-# tu shell, la de ec2-user, antes de que sudo cambie de usuario)
+# update kiwi to the latest release (full path: a ~ would be expanded by
+# your shell, ec2-user's, before sudo switches user)
 sudo -H -u kiwi /home/kiwi/.local/bin/kiwi update && sudo systemctl restart kiwi
 ```
 
-Lo que haga el agente queda en `/home/kiwi/work/<repo>`. Lo que quieras traerte, que
-lo suba como rama y abra un PR: no aparece en tu disco.
+Whatever the agent does stays in `/home/kiwi/work/<repo>`. Anything you want to bring
+back, have it push as a branch and open a PR: it does not show up on your disk.
 
-## Quitarlo
+## Tear it down
 
 ```sh
 npx cdk destroy
 ```
 
-Se borran la instancia, su disco y la red. El secreto pasa a estar programado para
-borrarse: Secrets Manager lo guarda 30 días por si te arrepientes.
+The instance, its disk and the network are deleted. The secret is scheduled for
+deletion: Secrets Manager keeps it for 30 days in case you change your mind.

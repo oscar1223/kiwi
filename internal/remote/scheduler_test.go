@@ -140,7 +140,7 @@ const chat = int64(42)
 func TestRunsOnSchedule(t *testing.T) {
 	f := newSchedFixture(t, "2026-10-06 08:00", nil)
 	reply := f.sc.Command(context.Background(), chat, `add "0 9 * * *" resume el día`)
-	if !strings.Contains(reply, "Tarea #1 creada") || !strings.Contains(reply, "mar 6 oct 09:00") {
+	if !strings.Contains(reply, "Task #1 created") || !strings.Contains(reply, "Tue 6 Oct 09:00") {
 		t.Fatalf("add replied:\n%s", reply)
 	}
 	f.start(t)
@@ -181,7 +181,7 @@ func TestPauseAndResume(t *testing.T) {
 	f.sc.Command(context.Background(), chat, "add @hourly comprueba la CI")
 	f.start(t)
 
-	if r := f.sc.Command(context.Background(), chat, "pause 1"); r != "Tarea #1 en pausa." {
+	if r := f.sc.Command(context.Background(), chat, "pause 1"); r != "Task #1 paused." {
 		t.Errorf("pause: %q", r)
 	}
 	f.advance(t, 3*time.Hour)
@@ -198,7 +198,7 @@ func TestRemovedJobStops(t *testing.T) {
 	f := newSchedFixture(t, "2026-10-06 08:30", nil)
 	f.sc.Command(context.Background(), chat, "add @hourly x")
 	f.start(t)
-	if r := f.sc.Command(context.Background(), chat, "rm 1"); r != "Tarea #1 borrada." {
+	if r := f.sc.Command(context.Background(), chat, "rm 1"); r != "Task #1 deleted." {
 		t.Errorf("rm: %q", r)
 	}
 	f.advance(t, 2*time.Hour)
@@ -236,7 +236,7 @@ func TestSlowJobIsNotStacked(t *testing.T) {
 func TestRunNow(t *testing.T) {
 	f := newSchedFixture(t, "2026-10-06 08:00", nil)
 	f.sc.Command(context.Background(), chat, "add @weekly informe")
-	if r := f.sc.Command(context.Background(), chat, "run 1"); r != "Ejecutando la tarea #1." {
+	if r := f.sc.Command(context.Background(), chat, "run 1"); r != "Running task #1." {
 		t.Errorf("run: %q", r)
 	}
 	f.expectRun(t, 1)
@@ -248,11 +248,11 @@ func TestCommandsAreScopedToTheChat(t *testing.T) {
 
 	other := int64(7)
 	for _, cmd := range []string{"pause 1", "resume 1", "rm 1", "run 1"} {
-		if r := f.sc.Command(context.Background(), other, cmd); r != "No hay ninguna tarea #1." {
+		if r := f.sc.Command(context.Background(), other, cmd); r != "There is no task #1." {
 			t.Errorf("%s from another chat: %q", cmd, r)
 		}
 	}
-	if r := f.sc.Command(context.Background(), other, "list"); !strings.Contains(r, "No hay tareas") {
+	if r := f.sc.Command(context.Background(), other, "list"); !strings.Contains(r, "No scheduled tasks") {
 		t.Errorf("another chat's list shows this chat's jobs:\n%s", r)
 	}
 	f.expectNoRun(t)
@@ -269,7 +269,7 @@ func TestAddParsing(t *testing.T) {
 		{"add */30 8-20 * * * mira el correo\ny avísame", "*/30 8-20 * * *", "mira el correo\ny avísame"},
 	}
 	for _, tt := range tests {
-		if r := f.sc.Command(context.Background(), chat, tt.args); !strings.Contains(r, "creada") {
+		if r := f.sc.Command(context.Background(), chat, tt.args); !strings.Contains(r, "created") {
 			t.Errorf("%q: %s", tt.args, r)
 		}
 	}
@@ -285,12 +285,12 @@ func TestAddRejects(t *testing.T) {
 	f := newSchedFixture(t, "2026-10-06 08:00", nil)
 	tests := []struct{ args, want string }{
 		{`add "61 * * * *" x`, "minute: 61"},
-		{`add "0 0 31 2 *" x`, "no se cumpliría nunca"},
-		{`add "0 9 * * *"`, "Falta la tarea"},
-		{`add "0 9 * * * sin cerrar`, "comillas"},
-		{`add 0 9 * *`, "Faltan"},
-		{`frobnicate`, "No conozco"},
-		{`pause`, "Falta el número"},
+		{`add "0 0 31 2 *" x`, "would never fire"},
+		{`add "0 9 * * *"`, "task is missing"},
+		{`add "0 9 * * * sin cerrar`, "quotes"},
+		{`add 0 9 * *`, "is missing"},
+		{`frobnicate`, "I don't know"},
+		{`pause`, "Missing the task number"},
 	}
 	for _, tt := range tests {
 		if r := f.sc.Command(context.Background(), chat, tt.args); !strings.Contains(r, tt.want) {
@@ -309,7 +309,7 @@ func TestList(t *testing.T) {
 	f.sc.Command(context.Background(), chat, "pause 2")
 
 	r := f.sc.Command(context.Background(), chat, "list")
-	for _, want := range []string{"#1 · 0 9 * * 1-5 · próxima: mar 6 oct 09:00", "revisa los PRs", "#2 · @daily · ⏸ en pausa"} {
+	for _, want := range []string{"#1 · 0 9 * * 1-5 · next: Tue 6 Oct 09:00", "revisa los PRs", "#2 · @daily · ⏸ paused"} {
 		if !strings.Contains(r, want) {
 			t.Errorf("list lacks %q:\n%s", want, r)
 		}

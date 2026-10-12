@@ -15,13 +15,13 @@ builds:
     goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
     ldflags:
-      # -s -w quita símbolos y DWARF: el binario sin strippear pesa ~76 MB.
-      # -X inyecta la versión en cmd/kiwi/root.go:13 (var version = "dev").
+      # -s -w strips symbols and DWARF: the unstripped binary is ~76 MB.
+      # -X injects the version into cmd/kiwi/root.go:13 (var version = "dev").
       - -s -w -X main.version={{ .Version }}
 
 archives:
   - id: kiwi
-    # Nombre estable y sin versión: install.sh construye esta URL a mano.
+    # Stable, versionless name: install.sh builds this URL by hand.
     name_template: "kiwi_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     format_overrides:
@@ -57,11 +57,11 @@ homebrew_casks:
       name: homebrew-tap
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/oscar1223/kiwi"
-    description: "Agente de código local-first para la terminal"
-    # El binario no está firmado por Apple: quitamos la cuarentena que macOS
-    # le pone a todo lo bajado, o Gatekeeper lo bloquea. Homebrew 7 depreca
-    # los bloques `postflight` con Ruby en favor de `postflight_steps`, que
-    # GoReleaser aún no genera: va como bloque literal.
+    description: "Local-first coding agent for the terminal"
+    # The binary is not signed by Apple: drop the quarantine macOS puts on
+    # everything downloaded, or Gatekeeper blocks it. Homebrew 7 deprecates
+    # Ruby `postflight` blocks in favor of `postflight_steps`, which
+    # GoReleaser does not generate yet: it goes in as a literal block.
     custom_block: |
       postflight_steps do
         on_macos do
@@ -76,5 +76,5 @@ scoops:
       name: scoop-bucket
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/oscar1223/kiwi"
-    description: "Agente de código local-first para la terminal"
+    description: "Local-first coding agent for the terminal"
     license: MIT

@@ -29,7 +29,7 @@ under the title that it is a local, gitignored note, with the date.
 
 Then, in this order:
 
-### Contexto
+### Context
 
 What is true today, with anchors. If the plan came out of comparing against
 something else, put the comparison in a table — one row per capability, one
@@ -43,7 +43,7 @@ If something recently built is what makes this work urgent, say so and say why.
 Causes are the part people forget, and they are what stops the plan being
 re-litigated later.
 
-### Decisiones tomadas
+### Decisions made
 
 Every decision that closes off an alternative, with the reason. Especially:
 
@@ -54,7 +54,7 @@ Every decision that closes off an alternative, with the reason. Especially:
 - What was **deferred rather than rejected**, so it is not lost.
 - What was **rejected**, so it is not proposed again next quarter.
 
-### Parte A, B, C…
+### Part A, B, C…
 
 One part per coherent piece of work. Each part explains what it does, where it
 touches the code, and the reasoning behind any non-obvious choice. Prose, not
@@ -67,13 +67,13 @@ not importance.
 Name the caps and limits explicitly. Anything unbounded — results, bytes, depth,
 retries, history — is a bug that arrives three months in, not on day one.
 
-### Orden
+### Order
 
 Numbered, with the reason each item is where it is. Dependencies, cheapest
 valuable thing first, and anything that pays down debt the last change created.
 When two orders are defensible, say which alternative you rejected.
 
-### Verificación
+### Verification
 
 The commands (`go build ./... && go vet ./... && go test ./...` or the
 project's equivalent), then the specific cases worth pinning — especially the

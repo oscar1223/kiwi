@@ -1,7 +1,7 @@
 {
   "name": "kiwi-aws",
   "private": true,
-  "description": "kiwi serve en un EC2, como stack de CDK",
+  "description": "kiwi serve on EC2, as a CDK stack",
   "type": "commonjs",
   "scripts": {
     "typecheck": "tsc --noEmit",

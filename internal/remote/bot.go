@@ -138,7 +138,7 @@ func (b *Bot) Run(ctx context.Context) error {
 }
 
 // Unsupported is the reply to a message Kiwi cannot read, such as a sticker.
-const Unsupported = "Eso no lo sé leer. Mándame texto, una foto, un audio, un vídeo o un documento."
+const Unsupported = "I can't read that. Send me text, a photo, audio, a video or a document."
 
 // dispatch answers an update if it is a private message from an allowed user.
 // Messages from anyone else are dropped without a reply, so a stranger cannot
@@ -190,14 +190,14 @@ func (b *Bot) dispatch(ctx context.Context, u Update) {
 // user if that cannot be done, or "" to go on.
 func (b *Bot) fetch(ctx context.Context, msg Message, m *Media) string {
 	if m.File.FileSize > MaxDownload {
-		return fmt.Sprintf("Ese fichero pesa %d MB y un bot de Telegram solo puede descargar hasta %d MB.", m.File.FileSize>>20, MaxDownload>>20)
+		return fmt.Sprintf("That file is %d MB and a Telegram bot can only download up to %d MB.", m.File.FileSize>>20, MaxDownload>>20)
 	}
 	if b.InboxDir == "" {
 		return ""
 	}
 	if err := b.download(ctx, msg, m, b.InboxDir); err != nil {
 		b.logf("could not download a %s from chat %d: %v", m.Kind, msg.Chat.ID, err)
-		return "No he podido descargar el fichero: " + err.Error()
+		return "Could not download the file: " + err.Error()
 	}
 	return ""
 }
