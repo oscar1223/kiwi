@@ -1,0 +1,26 @@
+# GitHub no deja pedir revisión al autor de una PR. Las que abre el dueño
+# (a mano o con agentes como Claude o Kiwi) se le asignan con el label
+# needs-review; las de otros ya le piden revisión por CODEOWNERS.
+name: Assign owner
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  assign:
+    if: github.event.pull_request.user.login == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assign owner and label for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh label create needs-review --repo "$GITHUB_REPOSITORY" \
+            --color FBCA04 --description "Pending owner review" 2>/dev/null || true
+          gh pr edit "$PR_URL" --add-assignee "$GITHUB_REPOSITORY_OWNER" --add-label needs-review
