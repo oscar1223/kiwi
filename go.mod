@@ -2,9 +2,6 @@ module github.com/oscar1223/kiwi
 
 go 1.27.0
 
-// The CDK stack's npm dependencies ship template .go files.
-ignore ./deploy/aws/node_modules
-
 require (
 	charm.land/bubbles/v2 v2.2.0
 	charm.land/bubbletea/v2 v2.0.9

@@ -7,6 +7,9 @@ your file system, command execution and a TUI inspired by tools like Claude Code
 runs on your machine, saves every session locally in SQLite and only acts on your
 project with the permission you give it.
 
+Looking for an agent that works on its own, from Telegram and with a browser? That is
+[KiwiBot](https://github.com/oscar1223/kiwibot), a separate project.
+
 ## Installation
 
 **macOS and Linux**
@@ -239,58 +242,6 @@ git diff | kiwi ask "review this patch" -
 
 It is read-only by default; `--mode work` allows edits, and `--yolo` also runs commands
 without asking.
-
-## `kiwi serve` (Telegram)
-
-Kiwi as a Telegram bot, to send it tasks from your phone. Every message is a task for
-the agent, which works in the directory you start it in (or `--cwd`) and replies when it
-is done. Meanwhile, a message keeps updating with what it is doing
-(`● bash: go test ./...`), and long answers arrive split over several messages. It also
-understands photos, voice notes, audio, video and documents. This is epic
-[#6](https://github.com/oscar1223/kiwi/issues/6).
-
-1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
-2. Get your user ID from [@userinfobot](https://t.me/userinfobot).
-3. Put them in Kiwi's `.env` (`~/.config/kiwi/.env`), never in a repo:
-
-   ```sh
-   KIWI_TELEGRAM_TOKEN=123456:ABC...
-   KIWI_TELEGRAM_ALLOWED_USERS=11111111
-   ```
-
-4. Run `kiwi serve` from the project directory.
-
-It runs in `work` mode: it edits files and runs commands without asking. Whatever the
-mode would still ask about (an `rm -rf`, a `sudo`, a force push…) reaches you as a
-message with **Allow** and **Deny** buttons; if you do not answer within 5 minutes
-(`--approval-timeout`), it is denied. `--mode plan` makes it read-only. It continues the
-directory's last conversation, so restarting it does not lose the thread; `/new` starts
-a new one. It only does one task at a time: if you write while it is working, it tells
-you it is busy.
-
-### Scheduled tasks
-
-`/cron` schedules tasks that Kiwi does on its own and sends to the chat, with the same
-live message and the same approval buttons:
-
-```
-/cron add "0 9 * * 1-5" review the open PRs and summarize them
-/cron add @daily summarize yesterday's commits
-/cron list
-/cron pause 3 · /cron resume 3 · /cron rm 3 · /cron run 3
-```
-
-Times are in the `KIWI_TZ` zone (default `Europe/Madrid`; a server is usually on UTC).
-Every run is a new conversation, separate from the chat's, and if the bot was off when a
-task was due it is not caught up: it waits for the next one.
-
-It only answers the IDs on the list and only in private chats; anyone else gets no reply
-at all. It uses long polling, so it opens no port. Treat the token like a password: with
-it, anyone can read the messages you send the bot and reply in its name. And **whoever
-gets into your Telegram account can run code on the machine where it runs**.
-
-To keep it always on in EC2, with no open ports, there is the CDK stack in
-[`deploy/aws`](deploy/aws/README.md).
 
 ## Configuration
 
